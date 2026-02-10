@@ -1,8 +1,91 @@
-Copyright (c) 2024 Secured Cyber Solutions Limited
+===============================================================================
+                SECURESEAHORSE PROPRIETARY LICENSE AGREEMENT
+===============================================================================
+Version 1.0 | Effective Date: February 10, 2026
+Copyright (c) 2024-2026 Secured Cyber Solutions Limited. All rights reserved.
 
-All rights reserved.
+-------------------------------------------------------------------------------
+1. DEFINITIONS
+-------------------------------------------------------------------------------
+"Software" refers to the SecureSeaHorse telemetry system, including but not 
+limited to the C++ source code (Client/Server), build scripts, certificate 
+generation helpers, and documentation.
 
-This source code and its accompanying documentation are the confidential and 
-proprietary information of Secured Cyber Solutions Limited. No part of this software may be 
-reproduced, distributed, or transmitted in any form or by any means without 
-the prior written permission of the copyright holder.
+"Authorized User" means an individual or entity granted express written 
+permission by Secured Cyber Solutions Limited to access the Software.
+
+"Security Protocols" refers to the mTLS implementation and CRC32 integrity 
+checks inherent to the Software’s operation.
+
+-------------------------------------------------------------------------------
+2. GRANT OF LICENSE
+-------------------------------------------------------------------------------
+Subject to the terms of this Agreement, Secured Cyber Solutions Limited grants 
+the Authorized User a non-exclusive, non-transferable, and revocable license 
+to use the Software solely for internal telemetry and monitoring purposes. 
+This license does not constitute a sale of the Software or any copies thereof.
+
+-------------------------------------------------------------------------------
+3. RESTRICTIONS & SECURITY INTEGRITY
+-------------------------------------------------------------------------------
+To maintain the security posture of the SecureSeaHorse ecosystem, the 
+following actions are strictly prohibited:
+
+    A. REVERSE ENGINEERING: You may not decompile, disassemble, or attempt 
+       to derive the source code or underlying algorithms of the Software, 
+       particularly the mTLS handshake logic and custom TCP protocol.
+
+    B. CIRCUMVENTION: Any attempt to bypass, modify, or tamper with the 
+       mTLS authentication or CRC32 packet integrity checks is a material 
+       |breach of this license.
+
+    C. REDISTRIBUTION: You may not sub-license, rent, lease, or lend the 
+       Software to any third party without prior written consent.
+
+-------------------------------------------------------------------------------
+4. CONFIDENTIALITY
+-------------------------------------------------------------------------------
+The Software contains trade secrets and proprietary information. The 
+Authorized User shall maintain the Software in strict confidence and shall 
+not disclose the internal directory structures, configuration templates, or 
+cryptographic methodologies (excepting public-domain OpenSSL standards) to 
+any unauthorized third party.
+
+-------------------------------------------------------------------------------
+5. DATA PRIVACY & TELEMETRY
+-------------------------------------------------------------------------------
+The User acknowledges that SecureSeaHorse is designed to scrape system logs 
+(Syslog/EventLog) and performance metrics. It is the User’s sole 
+responsibility to ensure that the deployment of this Software complies with 
+local data protection laws (e.g., GDPR, CCPA). Secured Cyber Solutions 
+Limited is not liable for the sensitive nature of the data transmitted 
+via the Software.
+
+-------------------------------------------------------------------------------
+6. NO WARRANTY (AS-IS)
+-------------------------------------------------------------------------------
+DISCLAIMER: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, 
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. 
+IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, 
+DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR 
+OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE.
+
+-------------------------------------------------------------------------------
+7. TERMINATION
+-------------------------------------------------------------------------------
+This license is effective until terminated. Your rights under this license 
+will terminate automatically without notice if you fail to comply with any 
+term(s) of this agreement. Upon termination, you shall cease all use of the 
+Software and destroy all copies, full or partial, thereof.
+
+-------------------------------------------------------------------------------
+8. GOVERNING LAW
+-------------------------------------------------------------------------------
+This Agreement shall be governed by and construed in accordance with the 
+laws of the jurisdiction in which Secured Cyber Solutions Limited is 
+registered, without regard to its conflict of law principles.
+
+===============================================================================
+                            END OF AGREEMENT
+===============================================================================
