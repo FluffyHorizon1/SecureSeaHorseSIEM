@@ -1,3 +1,5 @@
+#define NOMINMAX
+
 #define _CRT_SECURE_NO_WARNINGS 
 
 #include <iostream>
@@ -49,7 +51,9 @@
 typedef int SOCKET;
 #endif
 
-// --- GLOBAL CONTROL ---
+// =============================================================================
+// GLOBAL CONTROL
+// =============================================================================
 std::atomic<bool> g_running(true);
 
 void handle_signal(int sig) {
@@ -59,43 +63,23 @@ void handle_signal(int sig) {
 // --- NETWORK ORDER HELPERS ---
 inline uint64_t htonll_custom(uint64_t val) {
     static const int num = 42;
-    if (*(const char*)&num == 42) { // Little Endian
+    if (*(const char*)&num == 42) {
         return (((uint64_t)htonl((uint32_t)val)) << 32) | htonl((uint32_t)(val >> 32));
     }
     return val;
 }
 
-// --- SIMPLE LOGGER ---
-class SimpleLogger {
-    std::mutex log_mutex;
-    std::ofstream log_file;
-    bool to_file;
-public:
-    enum Level { INFO, WARN, ERROR_LOG, DEBUG };
-    SimpleLogger(const std::string& filename = "") {
-        if (!filename.empty()) {
-            log_file.open(filename, std::ios::app);
-            to_file = log_file.is_open();
-        }
-        else { to_file = false; }
-    }
-    void log(Level level, const std::string& msg) {
-        std::lock_guard<std::mutex> lock(log_mutex);
-        auto now = std::chrono::system_clock::now();
-        std::time_t now_c = std::chrono::system_clock::to_time_t(now);
-        std::stringstream ss;
-        ss << std::put_time(std::localtime(&now_c), "[%Y-%m-%d %H:%M:%S] ");
-        const char* lvlStr = (level == WARN) ? "[WARN] " : (level == ERROR_LOG) ? "[ERROR] " : (level == DEBUG) ? "[DEBUG] " : "[INFO] ";
-        std::string full_msg = ss.str() + lvlStr + msg;
-        std::cout << full_msg << "\n";
-        if (to_file) { log_file << full_msg << "\n"; log_file.flush(); }
-    }
-};
-
-SimpleLogger logger("client.log");
+// =============================================================================
+// PHASE 1: ASYNC LOGGER (replaces SimpleLogger)
+// Instantiated after config is loaded so rotation params are configurable
+// =============================================================================
+// Forward declaration — logger is a global unique_ptr initialized in main()
+static std::unique_ptr<AsyncLogger> logger;
 std::mutex scrape_mutex;
 
-// --- OPENSSL INITIALIZATION ---
+// =============================================================================
+// OPENSSL INITIALIZATION
+// =============================================================================
 void init_openssl() {
     SSL_load_error_strings();
     OpenSSL_add_ssl_algorithms();
@@ -105,21 +89,20 @@ void cleanup_openssl() {
     EVP_cleanup();
 }
 
-// --- UPDATED CONTEXT CREATION ---
 SSL_CTX* create_client_context(const std::string& ca_path, const std::string& cert_path, const std::string& key_path) {
     const SSL_METHOD* method = TLS_client_method();
     SSL_CTX* ctx = SSL_CTX_new(method);
     if (!ctx) {
-        logger.log(SimpleLogger::ERROR_LOG, "Unable to create SSL context");
+        logger->log(AsyncLogger::ERROR_LOG, "Unable to create SSL context");
         exit(EXIT_FAILURE);
     }
 
     if (SSL_CTX_load_verify_locations(ctx, ca_path.c_str(), NULL) <= 0) {
-        logger.log(SimpleLogger::WARN, "Failed to load CA: " + ca_path);
+        logger->log(AsyncLogger::WARN, "Failed to load CA: " + ca_path);
     }
     if (SSL_CTX_use_certificate_file(ctx, cert_path.c_str(), SSL_FILETYPE_PEM) <= 0 ||
         SSL_CTX_use_PrivateKey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM) <= 0) {
-        logger.log(SimpleLogger::ERROR_LOG, "Failed to load client mTLS certs from " + cert_path);
+        logger->log(AsyncLogger::ERROR_LOG, "Failed to load client mTLS certs from " + cert_path);
         exit(EXIT_FAILURE);
     }
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
@@ -127,7 +110,9 @@ SSL_CTX* create_client_context(const std::string& ca_path, const std::string& ce
     return ctx;
 }
 
-// --- SYSTEM HELPERS ---
+// =============================================================================
+// SYSTEM HELPERS
+// =============================================================================
 bool is_elevated() {
 #ifdef _WIN32
     BOOL fRet = FALSE;
@@ -183,7 +168,9 @@ void get_primary_ip(char* buffer, size_t size) {
 #endif
 }
 
-// --- METRIC GATHERING ---
+// =============================================================================
+// METRIC GATHERING (unchanged from v1.0.1)
+// =============================================================================
 void get_machine_info(RawTelemetry& r) {
     char hostname[64];
     if (gethostname(hostname, sizeof(hostname)) == 0) safe_strncpy(r.machine_name, hostname, sizeof(r.machine_name));
@@ -316,19 +303,52 @@ void scrape_logs(RawTelemetry& r) {
 #endif
 }
 
-// --- UPDATED MAIN ---
+// =============================================================================
+// MAIN — Phase 1 Upgraded
+// =============================================================================
 int main(int argc, char* argv[]) {
     std::signal(SIGINT, handle_signal);
     std::signal(SIGTERM, handle_signal);
 
-    // 1. Load configuration from file
-    AppConfig conf = load_config(CONFIG_FILE_NAME);
+    // -------------------------------------------------------------------------
+    // PHASE 1 [CLI]: Parse command-line arguments
+    // -------------------------------------------------------------------------
+    CliArgs cli = parse_client_cli(argc, argv);
+
+    if (cli.show_help) {
+        print_client_usage(argv[0]);
+        return 0;
+    }
+    if (cli.show_version) {
+        std::cout << "SecureSeaHorse Client v1.1.0 (Phase 1)\n";
+        return 0;
+    }
+
+    // -------------------------------------------------------------------------
+    // 1. Load configuration from file, then apply CLI overrides
+    // -------------------------------------------------------------------------
+    AppConfig conf = load_config(cli.config_path);
+    cli.apply_overrides(conf);
 
     std::string server_ip = conf.get("server_ip", "127.0.0.1");
     int port = conf.get_int("port", DEFAULT_PORT);
     int my_id = conf.get_int("device_id", 7001);
 
-    if (!is_elevated()) logger.log(SimpleLogger::WARN, "Not running as Admin/Root. Log scraping may fail.");
+    // -------------------------------------------------------------------------
+    // PHASE 1 [ASYNC LOGGER]: Initialize with configurable rotation
+    // -------------------------------------------------------------------------
+    {
+        std::string log_path = conf.get("log_file", "client.log");
+        size_t max_log_size = conf.get_size("log_max_bytes", 10 * 1024 * 1024);  // default 10MB
+        int max_log_files = conf.get_int("log_max_files", 5);
+        logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
+    }
+
+    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v1.1.0 starting ===");
+    logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
+    logger->log(AsyncLogger::INFO, "Target: " + server_ip + ":" + std::to_string(port) + " | Device ID: " + std::to_string(my_id));
+
+    if (!is_elevated()) logger->log(AsyncLogger::WARN, "Not running as Admin/Root. Log scraping may fail.");
 
     // 2. Security Setup
     init_openssl();
@@ -343,20 +363,40 @@ int main(int argc, char* argv[]) {
     if (WSAStartup(MAKEWORD(2, 2), &w) != 0) return 1;
 #endif
 
-    // 3. Primary Connection Loop
+    // -------------------------------------------------------------------------
+    // PHASE 1 [EXPONENTIAL BACKOFF]: Configure backoff parameters
+    // -------------------------------------------------------------------------
+    ExponentialBackoff backoff(
+        conf.get_int("backoff_base_ms", 1000),   // default 1s
+        conf.get_int("backoff_max_ms", 60000)     // default 60s cap
+    );
+
+    // -------------------------------------------------------------------------
+    // 3. Primary Connection Loop (with exponential backoff)
+    // -------------------------------------------------------------------------
     while (g_running) {
         SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
-        sockaddr_in a = { AF_INET, htons(port) };
+        sockaddr_in a = { AF_INET, htons(static_cast<uint16_t>(port)) };
         if (inet_pton(AF_INET, server_ip.c_str(), &a.sin_addr) <= 0) {
-            logger.log(SimpleLogger::ERROR_LOG, "Invalid Server IP: " + server_ip);
+            logger->log(AsyncLogger::ERROR_LOG, "Invalid Server IP: " + server_ip);
             break;
         }
 
-        logger.log(SimpleLogger::INFO, "Connecting to " + server_ip + ":" + std::to_string(port));
+        logger->log(AsyncLogger::INFO, "Connecting to " + server_ip + ":" + std::to_string(port)
+            + " (attempt " + std::to_string(backoff.attempt_count() + 1) + ")");
+
         if (connect(s, (sockaddr*)&a, sizeof(a)) < 0) {
-            logger.log(SimpleLogger::WARN, "TCP Connection failed. Retrying...");
+            int delay = backoff.next_delay_ms();
+            logger->log(AsyncLogger::WARN, "TCP Connection failed. Retrying in "
+                + std::to_string(delay) + "ms (backoff attempt "
+                + std::to_string(backoff.attempt_count()) + ")");
             closesocket(s);
-            std::this_thread::sleep_for(std::chrono::milliseconds(CLIENT_SLEEP_MS));
+
+            // Sleep in small increments so we can respond to shutdown signals
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay);
+            while (g_running && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
             continue;
         }
 
@@ -365,14 +405,23 @@ int main(int argc, char* argv[]) {
         SSL_set_fd(ssl, (int)s);
 
         if (SSL_connect(ssl) <= 0) {
-            logger.log(SimpleLogger::ERROR_LOG, "TLS Handshake failed (check certs/time).");
+            int delay = backoff.next_delay_ms();
+            logger->log(AsyncLogger::ERROR_LOG, "TLS Handshake failed. Retrying in "
+                + std::to_string(delay) + "ms");
             ERR_print_errors_fp(stderr);
             SSL_free(ssl);
             closesocket(s);
-            std::this_thread::sleep_for(std::chrono::milliseconds(CLIENT_SLEEP_MS));
+
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay);
+            while (g_running && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
             continue;
         }
-        logger.log(SimpleLogger::INFO, "TLS Established: " + std::string(SSL_get_cipher(ssl)));
+
+        // Connection successful — reset backoff
+        backoff.reset();
+        logger->log(AsyncLogger::INFO, "TLS Established: " + std::string(SSL_get_cipher(ssl)));
 
         // 4. Telemetry Transmission Loop
         while (g_running) {
@@ -419,13 +468,27 @@ int main(int argc, char* argv[]) {
             std::this_thread::sleep_for(std::chrono::milliseconds(CLIENT_SLEEP_MS));
         }
 
-        logger.log(SimpleLogger::INFO, "Closing connection.");
+        logger->log(AsyncLogger::INFO, "Closing connection. Will reconnect with backoff.");
         SSL_shutdown(ssl);
         SSL_free(ssl);
         closesocket(s);
+
+        // After a disconnect mid-session, apply a short initial backoff before reconnecting
+        if (g_running) {
+            int delay = backoff.next_delay_ms();
+            logger->log(AsyncLogger::INFO, "Reconnecting in " + std::to_string(delay) + "ms...");
+            auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay);
+            while (g_running && std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
     }
 
-    logger.log(SimpleLogger::INFO, "Graceful exit.");
+    logger->log(AsyncLogger::INFO, "=== Graceful exit ===");
+
+    // Destroy logger before OpenSSL cleanup to flush all pending messages
+    logger.reset();
+
     SSL_CTX_free(ctx);
     cleanup_openssl();
 #ifdef _WIN32
