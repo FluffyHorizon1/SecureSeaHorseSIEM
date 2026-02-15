@@ -1,6 +1,6 @@
 # 🐴 SecureSeaHorse SIEM
 
-**v1.2.0** · Lightweight, High-Security SIEM System
+**v1.3.0** · Lightweight, High-Security SIEM System
 
 ---
 
