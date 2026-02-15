@@ -5,6 +5,11 @@ bin/
 .vs/
 .vscode/
 
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
 # Compiled Binaries
 *.exe
 *.dll
@@ -23,3 +28,7 @@ bin/
 *.key
 *.csr
 *.pem
+*.srl
+
+# Vcpkg local installs
+vcpkg_installed/
