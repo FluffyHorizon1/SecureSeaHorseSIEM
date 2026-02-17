@@ -2,10 +2,10 @@
 #define DB_LAYER_H
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 2+4+5: PostgreSQL Persistence Layer
+// SecureSeaHorse SIEM — Phase 2+4+5+6: PostgreSQL Persistence Layer
 // =============================================================================
 // Provides:
-//   - Auto-schema creation (telemetry + security_events + threat_detections + ioc_matches)
+//   - Auto-schema creation (telemetry + security_events + threat_detections + ioc_matches + fim_events)
 //   - Thread-safe INSERT via mutex-guarded connection
 //   - Configurable via server.conf (db_host, db_port, db_name, db_user, db_pass)
 //   - Graceful fallback logging on connection failure
@@ -220,6 +220,47 @@ public:
     }
 
     // -------------------------------------------------------------------------
+    // INSERT: FIM change event (from FIM monitor, Phase 6)
+    // -------------------------------------------------------------------------
+    bool insert_fim_event(int32_t device_id, int64_t timestamp_ms,
+                           const char* machine_ip,
+                           const std::string& change_type,
+                           const std::string& file_path,
+                           const std::string& old_hash,
+                           const std::string& new_hash,
+                           uint64_t old_size, uint64_t new_size,
+                           const std::string& severity,
+                           const std::string& mitre_id,
+                           const std::string& description)
+    {
+        if (!config_.enabled) return false;
+
+        const char* sql =
+            "INSERT INTO fim_events "
+            "(device_id, timestamp_ms, machine_ip, change_type, file_path, "
+            " old_hash, new_hash, old_size, new_size, severity, "
+            " mitre_id, description) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)";
+
+        std::string s_dev   = std::to_string(device_id);
+        std::string s_ts    = std::to_string(timestamp_ms);
+        std::string s_oldz  = std::to_string(old_size);
+        std::string s_newz  = std::to_string(new_size);
+        std::string safe_path = file_path.substr(0, 512);
+        std::string safe_desc = description.substr(0, 512);
+
+        const char* params[12] = {
+            s_dev.c_str(), s_ts.c_str(), machine_ip,
+            change_type.c_str(), safe_path.c_str(),
+            old_hash.c_str(), new_hash.c_str(),
+            s_oldz.c_str(), s_newz.c_str(),
+            severity.c_str(), mitre_id.c_str(), safe_desc.c_str()
+        };
+
+        return exec_params(sql, 12, params);
+    }
+
+    // -------------------------------------------------------------------------
     // STATUS: Check if connected
     // -------------------------------------------------------------------------
     bool is_connected() {
@@ -404,6 +445,25 @@ private:
             "  received_at    TIMESTAMPTZ DEFAULT NOW()"
             ")";
 
+        // Phase 6: FIM events (from file integrity monitor)
+        const char* fim_ddl =
+            "CREATE TABLE IF NOT EXISTS fim_events ("
+            "  id             BIGSERIAL PRIMARY KEY,"
+            "  device_id      INTEGER NOT NULL,"
+            "  timestamp_ms   BIGINT NOT NULL,"
+            "  machine_ip     VARCHAR(32),"
+            "  change_type    VARCHAR(16) NOT NULL,"
+            "  file_path      VARCHAR(512) NOT NULL,"
+            "  old_hash       VARCHAR(64),"
+            "  new_hash       VARCHAR(64),"
+            "  old_size       BIGINT,"
+            "  new_size       BIGINT,"
+            "  severity       VARCHAR(16) NOT NULL,"
+            "  mitre_id       VARCHAR(32),"
+            "  description    VARCHAR(512),"
+            "  received_at    TIMESTAMPTZ DEFAULT NOW()"
+            ")";
+
         // Indexes for common query patterns
         const char* idx_telemetry_device =
             "CREATE INDEX IF NOT EXISTS idx_telemetry_device_ts "
@@ -429,6 +489,9 @@ private:
         if (exec_sql(ioc_ddl)) {
             log_msg("Schema OK: ioc_matches table ready.");
         }
+        if (exec_sql(fim_ddl)) {
+            log_msg("Schema OK: fim_events table ready.");
+        }
 
         exec_sql(idx_telemetry_device);
         exec_sql(idx_events_device);
@@ -449,6 +512,14 @@ private:
                  "ON ioc_matches (ioc_type, received_at DESC)");
         exec_sql("CREATE INDEX IF NOT EXISTS idx_ioc_feed "
                  "ON ioc_matches (feed_source, received_at DESC)");
+
+        // Phase 6: FIM event indexes
+        exec_sql("CREATE INDEX IF NOT EXISTS idx_fim_device_ts "
+                 "ON fim_events (device_id, timestamp_ms DESC)");
+        exec_sql("CREATE INDEX IF NOT EXISTS idx_fim_change "
+                 "ON fim_events (change_type, received_at DESC)");
+        exec_sql("CREATE INDEX IF NOT EXISTS idx_fim_path "
+                 "ON fim_events (file_path, received_at DESC)");
 
         log_msg("Database schema verified with indexes.");
     }
