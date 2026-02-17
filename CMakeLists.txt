@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
-project(SecureSeaHorseSIEM VERSION 1.2.0 LANGUAGES CXX)
+project(SecureSeaHorseSIEM VERSION 1.6.0 LANGUAGES CXX)
 
 # ==============================================================================
 # 1. Project Settings
 # ==============================================================================
-# Require C++17 (Needed for <filesystem> in client code)
+# Require C++17 (Needed for <filesystem>, <shared_mutex>, <regex>)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -51,10 +51,23 @@ endif()
 # ==============================================================================
 add_executable(SeaHorseServer
     ${SOURCE_DIR}/server.cpp
+    # --- Shared ---
+    ${SOURCE_DIR}/crypto_utils.h
+    # --- Phase 1: Core Protocol ---
     ${SOURCE_DIR}/server_protocol.h
+    # --- Phase 2: Analysis & Persistence ---
     ${SOURCE_DIR}/regex_engine.h
     ${SOURCE_DIR}/alert_engine.h
     ${SOURCE_DIR}/db_layer.h
+    # --- Phase 4: Traffic Classification ---
+    ${SOURCE_DIR}/traffic_classifier.h
+    ${SOURCE_DIR}/baseline_tracker.h
+    ${SOURCE_DIR}/mitre_map.h
+    # --- Phase 5: Threat Intelligence ---
+    ${SOURCE_DIR}/threat_intel.h
+    # --- Phase 6: File Integrity Monitoring ---
+    ${SOURCE_DIR}/fim_common.h
+    ${SOURCE_DIR}/fim_monitor.h
 )
 
 # Includes
@@ -80,7 +93,13 @@ endif()
 # ==============================================================================
 add_executable(SeaHorseClient
     ${SOURCE_DIR}/client.cpp
+    # --- Shared ---
+    ${SOURCE_DIR}/crypto_utils.h
+    # --- Phase 1: Core Protocol ---
     ${SOURCE_DIR}/client_protocol.h
+    # --- Phase 6: File Integrity Monitoring ---
+    ${SOURCE_DIR}/fim_common.h
+    ${SOURCE_DIR}/fim_scanner.h
 )
 
 # Includes
@@ -99,11 +118,17 @@ if(WIN32)
 endif()
 
 # ==============================================================================
-# 6. Post-Build: Copy Config Files (Convenience)
+# 6. Post-Build: Copy Config & Data Files
 # ==============================================================================
-# Automatically copies .conf files to the build folder so you don't have to manually move them.
-file(COPY "${CONFIG_DIR}/server.conf" DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-file(COPY "${CONFIG_DIR}/client.conf" DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
-file(COPY "${CONFIG_DIR}/rules.conf"  DESTINATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
+# Config files
+file(COPY "${CONFIG_DIR}/server.conf" DESTINATION "${CMAKE_BINARY_DIR}")
+file(COPY "${CONFIG_DIR}/client.conf" DESTINATION "${CMAKE_BINARY_DIR}")
+file(COPY "${CONFIG_DIR}/rules.conf"  DESTINATION "${CMAKE_BINARY_DIR}")
 
-message(STATUS "Build configuration complete.")
+# Phase 5: Threat intelligence feed files
+if(EXISTS "${CONFIG_DIR}/feeds")
+    file(COPY "${CONFIG_DIR}/feeds" DESTINATION "${CMAKE_BINARY_DIR}")
+    message(STATUS "Copied threat intel feeds directory")
+endif()
+
+message(STATUS "Build configuration complete. Version ${PROJECT_VERSION}")
