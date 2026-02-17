@@ -1,0 +1,32 @@
+# =============================================================================
+# SecureSeaHorse SIEM — Sample Threat Intelligence Feed: Malicious Domains
+# =============================================================================
+# Format: type | value | severity | description | mitre_id | tags
+# =============================================================================
+
+# --- Known C2 Domains ---
+domain | evil-update.com          | critical | APT28 C2 domain                    | T1071.001 | apt28,c2
+domain | malware-payload.net      | critical | Malware distribution site           | T1204.001 | malware,distribution
+domain | c2-callback.xyz          | critical | Generic C2 callback domain          | T1071.001 | c2,callback
+domain | update-service.top       | high     | Fake update C2 domain               | T1071.001 | c2,fake_update
+domain | secure-login-verify.com  | high     | Credential phishing domain          | T1566.002 | phishing,credential
+domain | free-vpn-download.net    | high     | Trojanized VPN distribution         | T1189     | trojan,drive_by
+
+# --- Known Cryptominer Pools ---
+domain | pool.minexmr.com         | high     | Monero mining pool (cryptojacking)  | T1496     | cryptominer,monero
+domain | xmr.pool.minergate.com   | high     | Minergate XMR pool                  | T1496     | cryptominer,monero
+domain | coinhive.com             | high     | Browser-based cryptomining (legacy)  | T1496     | cryptominer,browser
+
+# --- Known Data Exfiltration Destinations ---
+domain | paste.ee                 | medium   | Paste site used for data staging    | T1567     | exfil,paste
+domain | transfer.sh              | medium   | File sharing used for exfiltration  | T1567     | exfil,file_share
+domain | anonfiles.com            | medium   | Anonymous file hosting              | T1567     | exfil,anonymous
+
+# --- DNS Tunneling Indicators ---
+domain | dnscat2.example.com      | critical | DNSCat2 tunnel endpoint             | T1071.004 | dns_tunnel,c2
+domain | iodine.example.com       | critical | Iodine DNS tunnel endpoint          | T1071.004 | dns_tunnel,c2
+
+# --- Known Phishing Domains ---
+domain | micr0soft-login.com      | critical | Microsoft credential phishing       | T1566.002 | phishing,microsoft
+domain | g00gle-verify.com        | critical | Google credential phishing          | T1566.002 | phishing,google
+domain | paypa1-secure.com        | critical | PayPal credential phishing          | T1566.002 | phishing,paypal

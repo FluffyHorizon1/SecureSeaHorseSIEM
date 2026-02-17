@@ -1,0 +1,30 @@
+# =============================================================================
+# SecureSeaHorse SIEM — Sample Threat Intelligence Feed: Malicious IPs
+# =============================================================================
+# Format: type | value | severity | description | mitre_id | tags
+# Lines starting with # are comments.
+# =============================================================================
+
+# --- Known C2 Infrastructure ---
+ip | 185.220.101.1   | critical | Tor exit node used in APT campaigns         | T1090.003 | tor,apt,c2
+ip | 185.220.101.2   | critical | Tor exit node used in APT campaigns         | T1090.003 | tor,apt,c2
+ip | 45.33.32.156    | high     | Known Nmap scanhost (scanme.nmap.org)       | T1595.001 | scanning,recon
+ip | 198.51.100.23   | critical | Cobalt Strike C2 server                     | T1071.001 | c2,cobaltstrike
+ip | 203.0.113.50    | critical | Known ransomware C2 callback                | T1071.001 | c2,ransomware
+
+# --- Known Brute Force Sources ---
+ip | 91.240.118.172  | high     | Persistent SSH brute-force source           | T1110.001 | bruteforce,ssh
+ip | 141.98.11.70    | high     | Credential stuffing botnet node             | T1110.004 | bruteforce,botnet
+ip | 194.26.29.120   | high     | RDP brute-force campaign source             | T1110.001 | bruteforce,rdp
+
+# --- Known Botnet Infrastructure ---
+ip | 77.247.181.163  | critical | Mirai botnet C2                             | T1583.005 | botnet,mirai,iot
+ip | 176.10.104.240  | high     | DDoS-for-hire infrastructure                | T1498     | ddos,booter
+
+# --- CIDR Ranges (known-bad networks) ---
+cidr | 5.188.86.0/24   | high     | Bulletproof hosting — frequent abuse reports | T1583.003 | bulletproof,hosting
+cidr | 185.100.87.0/24 | high     | Tor-associated infrastructure block          | T1090.003 | tor,anonymization
+
+# --- Spam / Phishing Sources ---
+ip | 209.85.220.69   | medium   | Known phishing campaign relay               | T1566.002 | phishing,spam
+ip | 104.47.58.100   | medium   | Spam relay used in credential harvesting    | T1566.001 | phishing,credential_harvest
