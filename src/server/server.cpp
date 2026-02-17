@@ -24,14 +24,16 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-// --- Phase 1 + 2 + 3 + 4 + 5 Headers ---
+// --- Phase 1 + 2 + 3 + 4 + 5 + 6 Headers ---
 #include "server_protocol.h" 
 #include "crypto_utils.h"         // Phase 3: HMAC, CRL, OCSP, heartbeat
 #include "regex_engine.h"         // Phase 2: Regex-based log analysis
 #include "alert_engine.h"         // Phase 2: Log-based threshold alerting
-#include "db_layer.h"             // Phase 2+4: PostgreSQL persistence
+#include "db_layer.h"             // Phase 2+4+5+6: PostgreSQL persistence
 #include "traffic_classifier.h"   // Phase 4: Traffic classification + MITRE
 #include "threat_intel.h"         // Phase 5: Threat intelligence feeds
+#include "fim_common.h"           // Phase 6: FIM data structures
+#include "fim_monitor.h"          // Phase 6: Server-side FIM monitor
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -43,6 +45,7 @@ typedef int socklen_t;
 #else
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #define INVALID_SOCKET -1
 #define closesocket close
@@ -67,6 +70,7 @@ static std::unique_ptr<RegexEngine>        regex_engine;    // Phase 2
 static std::unique_ptr<AlertEngine>        alert_engine;    // Phase 2
 static std::unique_ptr<TrafficClassifier>  classifier;      // Phase 4
 static std::unique_ptr<ThreatIntelEngine>  threat_intel;     // Phase 5
+static std::unique_ptr<FimMonitor>         fim_monitor;      // Phase 6
 
 // Phase 3 config
 static bool g_hmac_enabled       = true;
@@ -413,6 +417,58 @@ void process_report(RawTelemetry& current) {
 }
 
 // =============================================================================
+// PHASE 6: PROCESS FIM REPORT
+// =============================================================================
+void process_fim_report(const char* payload_data, uint32_t payload_len,
+                         const std::string& client_ip)
+{
+    if (!fim_monitor) return;
+
+    std::string data(payload_data, payload_len);
+    FimReport report;
+    if (!FimReport::deserialize(data, report)) {
+        logger->log(AsyncLogger::WARN, "FIM: Failed to deserialize report from " + client_ip);
+        return;
+    }
+
+    logger->log(AsyncLogger::INFO, "FIM: Report from device " + std::to_string(report.device_id)
+        + " — " + std::to_string(report.entries.size()) + " files");
+
+    std::vector<FimAlert> alerts = fim_monitor->process(report, client_ip);
+
+    for (const auto& a : alerts) {
+        // DB persistence
+        if (pg_store) {
+            pg_store->insert_fim_event(
+                a.device_id, a.timestamp_ms, a.machine_ip.c_str(),
+                fim_change_str(a.change_type), a.path,
+                a.old_hash, a.new_hash,
+                a.old_size, a.new_size,
+                a.severity, a.mitre_id, a.description);
+        }
+
+        // Log output
+        std::stringstream ss;
+        ss << "\033[1;35m[FIM]\033[0m "
+           << "device=" << a.device_id
+           << " | " << fim_change_str(a.change_type)
+           << " | " << a.severity
+           << " | " << a.path;
+        if (!a.mitre_id.empty()) ss << " | MITRE " << a.mitre_id;
+        if (a.change_type == FimChangeType::FIM_MODIFIED)
+            ss << " | hash=" << a.old_hash.substr(0, 12) << "→" << a.new_hash.substr(0, 12);
+
+        if (a.severity == "critical") {
+            logger->log(AsyncLogger::ERROR_LOG, ss.str());
+        } else if (a.severity == "high") {
+            logger->log(AsyncLogger::WARN, ss.str());
+        } else {
+            logger->log(AsyncLogger::INFO, ss.str());
+        }
+    }
+}
+
+// =============================================================================
 // PHASE 3: SEND HEARTBEAT PONG
 // =============================================================================
 bool send_heartbeat_pong(SSL* ssl, const HeartbeatPayload& ping, const uint8_t* hmac_key) {
@@ -436,6 +492,23 @@ void handle_client_ssl(SSL* ssl, SOCKET sock) {
     }
 
     logger->log(AsyncLogger::INFO, "TLS session established. Cipher: " + std::string(SSL_get_cipher(ssl)));
+
+    // Extract peer IP for FIM reports
+    std::string peer_ip = "unknown";
+    {
+        struct sockaddr_in peer_addr;
+        socklen_t peer_len = sizeof(peer_addr);
+        if (getpeername(sock, (struct sockaddr*)&peer_addr, &peer_len) == 0) {
+            char ip_buf[INET_ADDRSTRLEN] = {0};
+#ifdef _WIN32
+            // Windows inet_ntoa is simpler
+            strncpy(ip_buf, inet_ntoa(peer_addr.sin_addr), sizeof(ip_buf) - 1);
+#else
+            inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, sizeof(ip_buf));
+#endif
+            peer_ip = ip_buf;
+        }
+    }
 
     // Phase 3: HMAC key derivation
     uint8_t hmac_key[HMAC_KEY_LEN] = {0};
@@ -511,6 +584,13 @@ void handle_client_ssl(SSL* ssl, SOCKET sock) {
                     }
                     break;
                 }
+                case MSG_FIM_REPORT: {
+                    // Phase 6: File Integrity Monitoring report
+                    if (plen > 0) {
+                        process_fim_report(payload.data(), plen, peer_ip);
+                    }
+                    break;
+                }
                 default:
                     logger->log(AsyncLogger::WARN, "Unknown v2 msg_type: " + std::to_string(msg_type));
                     break;
@@ -557,7 +637,7 @@ int main(int argc, char* argv[]) {
 
     CliArgs cli = parse_server_cli(argc, argv);
     if (cli.show_help) { print_server_usage(argv[0]); return 0; }
-    if (cli.show_version) { std::cout << "SecureSeaHorse Server v1.5.0 (Phase 5)\n"; return 0; }
+    if (cli.show_version) { std::cout << "SecureSeaHorse Server v1.6.0 (Phase 6)\n"; return 0; }
 
 #ifdef _WIN32
     WSADATA w;
@@ -585,7 +665,7 @@ int main(int argc, char* argv[]) {
         logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
     }
 
-    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Server v1.5.0 (Phase 5) starting ===");
+    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Server v1.6.0 (Phase 6) starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
 
     // Legacy CSV
@@ -710,6 +790,47 @@ int main(int argc, char* argv[]) {
     }
 
     // -------------------------------------------------------------------------
+    // PHASE 6 [FIM MONITOR]: Initialize file integrity monitor
+    // -------------------------------------------------------------------------
+    {
+        FimMonitorConfig fim_cfg;
+        fim_cfg.enabled = conf.get_bool("fim_enabled", true);
+        fim_cfg.default_severity = conf.get("fim_default_severity", "medium");
+
+        // Load user-defined critical paths from config
+        std::string crit_paths = conf.get("fim_critical_paths", "");
+        if (!crit_paths.empty()) {
+            std::istringstream iss(crit_paths);
+            std::string path;
+            while (std::getline(iss, path, ',')) {
+                path.erase(0, path.find_first_not_of(" \t"));
+                path.erase(path.find_last_not_of(" \t") + 1);
+                if (!path.empty()) fim_cfg.critical_paths.push_back(path);
+            }
+        }
+
+        std::string high_paths = conf.get("fim_high_paths", "");
+        if (!high_paths.empty()) {
+            std::istringstream iss(high_paths);
+            std::string path;
+            while (std::getline(iss, path, ',')) {
+                path.erase(0, path.find_first_not_of(" \t"));
+                path.erase(path.find_last_not_of(" \t") + 1);
+                if (!path.empty()) fim_cfg.high_paths.push_back(path);
+            }
+        }
+
+        fim_monitor = std::make_unique<FimMonitor>(fim_cfg);
+
+        if (fim_cfg.enabled) {
+            logger->log(AsyncLogger::INFO,
+                "FIM Monitor: ENABLED | severity_default=" + fim_cfg.default_severity);
+        } else {
+            logger->log(AsyncLogger::INFO, "FIM Monitor: disabled.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // 2. Security (Phase 3)
     // -------------------------------------------------------------------------
     init_openssl();
@@ -779,6 +900,8 @@ int main(int argc, char* argv[]) {
                                     << " (devices baselined: " << classifier->baselined_devices() << ")";
                 if (threat_intel) ss << " | IoC: " << threat_intel->total_iocs()
                                      << " loaded, " << threat_intel->total_matches.load() << " hits";
+                if (fim_monitor) ss << " | FIM: " << fim_monitor->baselined_devices()
+                                    << " devices, " << fim_monitor->total_changes() << " changes";
                 if (pg_store) ss << " | DB: " << (pg_store->is_connected() ? "up" : "down");
                 logger->log(AsyncLogger::INFO, ss.str());
             }
@@ -804,6 +927,7 @@ int main(int argc, char* argv[]) {
     // 5. Cleanup
     // -------------------------------------------------------------------------
     logger->log(AsyncLogger::INFO, "=== Server exiting gracefully ===");
+    fim_monitor.reset();
     threat_intel.reset();
     classifier.reset();
     alert_engine.reset();
