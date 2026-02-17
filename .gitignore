@@ -32,3 +32,13 @@ cmake_install.cmake
 
 # Vcpkg local installs
 vcpkg_installed/
+
+# Phase 2: Database credentials (if stored locally)
+*.pgpass
+
+# Phase 5: Threat intel feeds — KEEP sample feeds, ignore downloaded/custom feeds
+# Uncomment the line below if you download large third-party feed files locally:
+# config/feeds/custom_*.csv
+
+# Phase 6: FIM baseline snapshots (generated at runtime, not version-controlled)
+fim_baseline_*.json
