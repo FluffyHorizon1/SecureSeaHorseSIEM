@@ -1,4 +1,5 @@
 #define _CRT_SECURE_NO_WARNINGS 
+#define NOMINMAX   // Prevent Windows.h from defining min/max macros
 
 #include <iostream>
 #include <fstream>
@@ -18,9 +19,11 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-// --- Phase 1 + 3 Headers ---
+// --- Phase 1 + 3 + 6 Headers ---
 #include "client_protocol.h" 
 #include "crypto_utils.h"    // Phase 3: HMAC, CRL, OCSP, heartbeat types
+#include "fim_common.h"      // Phase 6: FIM data structures
+#include "fim_scanner.h"     // Phase 6: File integrity scanner
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -79,6 +82,10 @@ std::mutex scrape_mutex;
 static std::atomic<uint32_t>  heartbeat_seq{0};
 static std::atomic<bool>      pong_received{true};   // Start true = healthy
 static std::atomic<int64_t>   last_pong_time_ms{0};
+
+// Phase 6: FIM state
+static std::unique_ptr<FimScanner> fim_scanner;
+static std::atomic<bool> fim_initial_scan_done{false};
 
 // =============================================================================
 // OPENSSL INITIALIZATION — Phase 3 Upgraded
@@ -402,6 +409,62 @@ bool send_telemetry_v1(SSL* ssl, const RawTelemetry& r_net) {
 // =============================================================================
 // PHASE 3: SEND HEARTBEAT PING
 // =============================================================================
+// =============================================================================
+// PHASE 6: SEND FIM REPORT
+// =============================================================================
+bool send_fim_report(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
+    if (!fim_scanner) return true;  // FIM disabled — not an error
+
+    // Perform scan
+    auto snapshot = fim_scanner->scan();
+    logger->log(AsyncLogger::INFO, "FIM: Scanned " + std::to_string(snapshot.size())
+        + " files (" + std::to_string(fim_scanner->files_hashed()) + " hashed, "
+        + std::to_string(fim_scanner->scan_errors()) + " errors)");
+
+    // Check for changes if baseline exists
+    std::vector<FimEntry> baseline;
+    if (fim_scanner->has_baseline()) {
+        auto changes = FimScanner::diff(baseline, snapshot);
+        if (!changes.empty()) {
+            logger->log(AsyncLogger::WARN, "FIM: " + std::to_string(changes.size())
+                + " file change(s) detected locally");
+        }
+    }
+
+    // Build report
+    FimReport report;
+    report.device_id = device_id;
+    auto now = std::chrono::system_clock::now();
+    report.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now.time_since_epoch()).count();
+    report.entries = snapshot;
+
+    // Serialize
+    std::string payload = report.serialize();
+
+    // Send as v2 message with MSG_FIM_REPORT type
+    PacketHeaderV2 hdr = build_v2_header(MSG_FIM_REPORT,
+        static_cast<uint32_t>(payload.size()),
+        reinterpret_cast<const uint8_t*>(payload.data()),
+        hmac_key);
+
+    if (!send_exact_ssl(ssl, &hdr, sizeof(hdr))) return false;
+    if (!send_exact_ssl(ssl, payload.data(), payload.size())) return false;
+
+    // Update baseline to current scan
+    fim_scanner->update_baseline(snapshot);
+    if (!fim_initial_scan_done) {
+        fim_initial_scan_done = true;
+        logger->log(AsyncLogger::INFO, "FIM: Initial baseline established ("
+            + std::to_string(snapshot.size()) + " files)");
+    }
+
+    return true;
+}
+
+// =============================================================================
+// PHASE 3: SEND HEARTBEAT PING
+// =============================================================================
 bool send_heartbeat_ping(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
     HeartbeatPayload ping;
     auto now = std::chrono::system_clock::now();
@@ -485,7 +548,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (cli.show_version) {
-        std::cout << "SecureSeaHorse Client v1.3.0 (Phase 3)\n";
+        std::cout << "SecureSeaHorse Client v1.6.0 (Phase 6)\n";
         return 0;
     }
 
@@ -505,6 +568,10 @@ int main(int argc, char* argv[]) {
     int    heartbeat_timeout  = conf.get_int("heartbeat_timeout_s", 45);
     std::string cert_pin      = conf.get("cert_pin_sha256", "");
 
+    // Phase 6 config: File Integrity Monitoring
+    bool fim_enabled          = conf.get_bool("fim_enabled", true);
+    int  fim_scan_interval    = conf.get_int("fim_scan_interval_s", 300);
+
     // -------------------------------------------------------------------------
     // PHASE 1 [ASYNC LOGGER]: Initialize
     // -------------------------------------------------------------------------
@@ -515,7 +582,7 @@ int main(int argc, char* argv[]) {
         logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
     }
 
-    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v1.3.0 (Phase 3) starting ===");
+    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v1.6.0 (Phase 6) starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
     logger->log(AsyncLogger::INFO, "Target: " + server_ip + ":" + std::to_string(port)
                  + " | Device ID: " + std::to_string(my_id));
@@ -523,6 +590,65 @@ int main(int argc, char* argv[]) {
                  + " Heartbeat=" + std::to_string(heartbeat_interval) + "s/"
                  + std::to_string(heartbeat_timeout) + "s timeout"
                  + (cert_pin.empty() ? "" : " Pin=configured"));
+
+    // -------------------------------------------------------------------------
+    // PHASE 6 [FIM SCANNER]: Initialize file integrity scanner
+    // -------------------------------------------------------------------------
+    if (fim_enabled) {
+        FimScannerConfig fim_cfg;
+        fim_cfg.enabled = true;
+        fim_cfg.scan_interval_s = fim_scan_interval;
+        fim_cfg.max_file_size = conf.get_size("fim_max_file_size", 100 * 1024 * 1024);
+        fim_cfg.max_files     = conf.get_int("fim_max_files", 50000);
+        fim_cfg.max_depth     = conf.get_int("fim_max_depth", 20);
+
+        // Parse watch paths (comma-separated)
+        std::string watch = conf.get("fim_watch_paths", "");
+        if (!watch.empty()) {
+            std::istringstream iss(watch);
+            std::string path;
+            while (std::getline(iss, path, ',')) {
+                path.erase(0, path.find_first_not_of(" \t"));
+                path.erase(path.find_last_not_of(" \t") + 1);
+                if (!path.empty()) fim_cfg.watch_paths.push_back(path);
+            }
+        }
+#ifdef _WIN32
+        // Default Windows watch paths if none configured
+        if (fim_cfg.watch_paths.empty()) {
+            fim_cfg.watch_paths.push_back("C:\\Windows\\System32\\drivers\\etc");
+            fim_cfg.watch_paths.push_back("C:\\Windows\\System32\\config");
+        }
+        fim_cfg.exclude_extensions = {".tmp", ".log", ".etl", ".evtx"};
+#else
+        if (fim_cfg.watch_paths.empty()) {
+            fim_cfg.watch_paths.push_back("/etc");
+            fim_cfg.watch_paths.push_back("/usr/sbin");
+        }
+        fim_cfg.exclude_extensions = {".tmp", ".log", ".swp", ".pyc"};
+#endif
+        // Parse user exclusions
+        std::string excl_ext = conf.get("fim_exclude_ext", "");
+        if (!excl_ext.empty()) {
+            std::istringstream iss(excl_ext);
+            std::string ext;
+            while (std::getline(iss, ext, ',')) {
+                ext.erase(0, ext.find_first_not_of(" \t"));
+                ext.erase(ext.find_last_not_of(" \t") + 1);
+                if (!ext.empty()) fim_cfg.exclude_extensions.push_back(ext);
+            }
+        }
+
+        fim_scanner = std::make_unique<FimScanner>(fim_cfg);
+        logger->log(AsyncLogger::INFO, "FIM: ENABLED | " + std::to_string(fim_cfg.watch_paths.size())
+            + " watch path(s) | scan every " + std::to_string(fim_scan_interval) + "s"
+            + " | max_files=" + std::to_string(fim_cfg.max_files));
+        for (const auto& wp : fim_cfg.watch_paths) {
+            logger->log(AsyncLogger::INFO, "FIM:   watch: " + wp);
+        }
+    } else {
+        logger->log(AsyncLogger::INFO, "FIM: disabled.");
+    }
 
     if (!is_elevated()) logger->log(AsyncLogger::WARN, "Not running as Admin/Root. Log scraping may fail.");
 
@@ -677,9 +803,11 @@ int main(int argc, char* argv[]) {
         }
 
         // =====================================================================
-        // 4. Telemetry + Heartbeat Transmission Loop
+        // 4. Telemetry + Heartbeat + FIM Transmission Loop
         // =====================================================================
         auto last_heartbeat = std::chrono::steady_clock::now();
+        auto last_fim_scan  = std::chrono::steady_clock::now() -
+                              std::chrono::seconds(fim_scan_interval);  // Trigger immediately on first iteration
 
         while (g_running && session_alive) {
             // --- Gather telemetry ---
@@ -741,6 +869,15 @@ int main(int argc, char* argv[]) {
                     logger->log(AsyncLogger::WARN, "Heartbeat timeout — no pong in "
                                  + std::to_string(heartbeat_timeout) + "s. Reconnecting.");
                     break;
+                }
+            }
+
+            // --- FIM scan (if interval elapsed) ---
+            if (fim_scanner && hmac_active && fim_scan_interval > 0) {
+                auto since_fim = std::chrono::steady_clock::now() - last_fim_scan;
+                if (since_fim >= std::chrono::seconds(fim_scan_interval)) {
+                    if (!send_fim_report(ssl, my_id, hmac_key)) break;
+                    last_fim_scan = std::chrono::steady_clock::now();
                 }
             }
 
