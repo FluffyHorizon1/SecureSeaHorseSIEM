@@ -1,6 +1,10 @@
 #ifndef CRYPTO_UTILS_H
 #define CRYPTO_UTILS_H
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 // =============================================================================
 // SecureSeaHorse SIEM — Phase 3: Cryptographic Utilities
 // =============================================================================
@@ -45,6 +49,7 @@ enum MsgType : uint8_t {
     MSG_TELEMETRY      = 0x00,  // Standard telemetry report
     MSG_HEARTBEAT_PING = 0x01,  // Client → Server keep-alive ping
     MSG_HEARTBEAT_PONG = 0x02,  // Server → Client keep-alive pong
+    MSG_FIM_REPORT     = 0x03,  // Phase 6: File Integrity Monitoring snapshot
 };
 
 // =============================================================================
