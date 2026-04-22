@@ -99,8 +99,8 @@ struct ClassifierConfig {
 // =============================================================================
 class TrafficClassifier {
 public:
-    explicit TrafficClassifier(const ClassifierConfig& cfg = {},
-                                const BaselineTracker::Config& bl_cfg = {})
+    explicit TrafficClassifier(const ClassifierConfig& cfg,
+                                const BaselineTracker::Config& bl_cfg)
         : config_(cfg), baselines_(bl_cfg)
     {
         compile_patterns();

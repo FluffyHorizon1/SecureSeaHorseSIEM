@@ -488,7 +488,7 @@ public:
         bool entropy_enabled  = true;
     };
 
-    explicit NetworkInspector(const InspectorConfig& cfg = {}) : config_(cfg) {}
+    explicit NetworkInspector(const InspectorConfig& cfg) : config_(cfg) {}
 
     // Full inspection of a log chunk -- runs all enabled analyzers
     std::vector<NetworkFinding> inspect(const std::string& log_chunk,

@@ -318,7 +318,7 @@ private:
         }
     }
 public:
-    explicit DynamicThreadPool(const Config& cfg = {}) : config_(cfg) {
+    explicit DynamicThreadPool(const Config& cfg) : config_(cfg) {
         if (config_.min_threads == 0) config_.min_threads = 1;
         if (config_.max_threads < config_.min_threads) config_.max_threads = config_.min_threads;
         for (size_t i = 0; i < config_.min_threads; i++) spawn_worker();

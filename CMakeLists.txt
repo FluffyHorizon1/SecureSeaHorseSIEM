@@ -22,11 +22,23 @@ find_package(libpq CONFIG QUIET)
 if(libpq_FOUND)
     message(STATUS "Found libpq via vcpkg config")
     set(PG_LIBS libpq::libpq)
+    set(PG_INCLUDES "")
 else()
     message(STATUS "Searching for system PostgreSQL...")
     find_package(PostgreSQL REQUIRED)
     set(PG_LIBS ${PostgreSQL_LIBRARIES})
     set(PG_INCLUDES ${PostgreSQL_INCLUDE_DIRS})
+endif()
+
+# Fallback: add common PostgreSQL include paths if not found
+if(NOT PG_INCLUDES)
+    find_path(PG_INCLUDE_DIR libpq-fe.h
+        PATHS /usr/include /usr/include/postgresql /usr/local/include
+        PATH_SUFFIXES postgresql
+    )
+    if(PG_INCLUDE_DIR)
+        set(PG_INCLUDES ${PG_INCLUDE_DIR})
+    endif()
 endif()
 
 # ==============================================================================

@@ -135,7 +135,7 @@ public:
         double z_low      = 2.0;   // Low confidence (informational)
     };
 
-    explicit BaselineTracker(const Config& cfg = {}) : config_(cfg) {}
+    explicit BaselineTracker(const Config& cfg) : config_(cfg) {}
 
     // -------------------------------------------------------------------------
     // UPDATE: Feed a new telemetry report and compute deltas

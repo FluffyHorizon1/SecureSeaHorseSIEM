@@ -391,7 +391,7 @@ public:
         int         reload_interval_s = 300;        // Check for feed updates every N seconds
     };
 
-    explicit ThreatIntelEngine(const Config& cfg = {})
+    explicit ThreatIntelEngine(const Config& cfg)
         : config_(cfg), last_reload_(std::chrono::steady_clock::now())
     {
         if (config_.enabled) {
