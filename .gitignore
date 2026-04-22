@@ -42,3 +42,14 @@ vcpkg_installed/
 
 # Phase 6: FIM baseline snapshots (generated at runtime, not version-controlled)
 fim_baseline_*.json
+
+# Phase 7: REST API token backups
+rest_token_*.txt
+
+# Phase 8: Incident response scripts (user-supplied)
+scripts/*.sh
+scripts/*.bat
+scripts/*.ps1
+
+# Phase 9: Fleet snapshots (generated at runtime)
+fleet_snapshot_*.json
