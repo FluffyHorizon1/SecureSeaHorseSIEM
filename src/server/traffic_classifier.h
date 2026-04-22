@@ -6,14 +6,14 @@
 #endif
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 4: Traffic Classification & Exploit Detection
+// SecureSeaHorse SIEM -- Phase 4: Traffic Classification & Exploit Detection
 // =============================================================================
 // Provides:
 //   - 6 attack categories: DDoS, Port Scan, Brute Force, Exfiltration,
 //     C2 Beaconing, Lateral Movement
 //   - Adaptive baselines (EWMA) + configurable fixed thresholds
 //   - MITRE ATT&CK technique ID tagging on every detection
-//   - Confidence scoring (0.0–1.0) from statistical anomaly z-scores
+//   - Confidence scoring (0.0-1.0) from statistical anomaly z-scores
 //   - Log pattern analysis (regex) + network volume analysis (baselines)
 //   - Persistence: detections stored in security_events table via PgStore
 // =============================================================================
@@ -33,7 +33,7 @@
 #include "regex_engine.h"   // Required: SecurityEvent struct definition
 
 // =============================================================================
-// THREAT DETECTION — Output from the classifier
+// THREAT DETECTION -- Output from the classifier
 // =============================================================================
 struct ThreatDetection {
     // --- Classification ---
@@ -41,7 +41,7 @@ struct ThreatDetection {
                                // "c2_beaconing", "lateral_movement"
     std::string sub_type;      // Specific variant, e.g. "ddos_syn_flood"
     std::string severity;      // "low", "medium", "high", "critical"
-    double      confidence;    // 0.0 – 1.0
+    double      confidence = 0.0;    // 0.0 - 1.0
 
     // --- MITRE ATT&CK ---
     std::string mitre_id;      // e.g. "T1498.001"
@@ -53,13 +53,13 @@ struct ThreatDetection {
     std::string evidence;      // Raw data that triggered the detection
 
     // --- Context ---
-    int32_t     device_id;
+    int32_t     device_id = 0;
     std::string machine_ip;
-    int64_t     timestamp_ms;
+    int64_t     timestamp_ms = 0;
 };
 
 // =============================================================================
-// CLASSIFIER CONFIG — Thresholds with configurable overrides
+// CLASSIFIER CONFIG -- Thresholds with configurable overrides
 // =============================================================================
 struct ClassifierConfig {
     // --- DDoS thresholds ---
@@ -107,7 +107,7 @@ public:
     }
 
     // =========================================================================
-    // CLASSIFY — Main entry point
+    // CLASSIFY -- Main entry point
     // =========================================================================
     // Called once per telemetry report with:
     //   - Raw telemetry fields (network, CPU, etc.)
@@ -317,7 +317,7 @@ private:
 
                 threats.push_back(make_threat(
                     "ddos", "ddos_volumetric", sev, conf, dev, ts, ip,
-                    "Anomalous inbound traffic volume — possible volumetric DDoS",
+                    "Anomalous inbound traffic volume -- possible volumetric DDoS",
                     evidence.str()));
             }
         }
@@ -334,7 +334,7 @@ private:
         if (count_matches(log, pat_.conn_table_full) > 0) {
             threats.push_back(make_threat(
                 "ddos", "ddos_application_layer", "high", 0.75, dev, ts, ip,
-                "Connection table exhaustion — possible application-layer DDoS",
+                "Connection table exhaustion -- possible application-layer DDoS",
                 log.substr(0, 256)));
         }
 
@@ -367,21 +367,21 @@ private:
                 log.substr(0, 256)));
         }
 
-        // High refused connection count → sequential scan
+        // High refused connection count -> sequential scan
         if (refused >= config_.portscan_conn_refused_min) {
             double conf = std::min(0.5 + (refused - config_.portscan_conn_refused_min) * 0.05, 0.9);
             threats.push_back(make_threat(
                 "portscan", "portscan_sequential", "medium", conf, dev, ts, ip,
-                "High rate of refused connections (" + std::to_string(refused) + ") — possible port scan",
+                "High rate of refused connections (" + std::to_string(refused) + ") -- possible port scan",
                 "connection_refused_count=" + std::to_string(refused)));
         }
 
-        // Reset flood → stealth scan (SYN/FIN/XMAS)
+        // Reset flood -> stealth scan (SYN/FIN/XMAS)
         if (resets >= config_.portscan_reset_min) {
             double conf = std::min(0.5 + (resets - config_.portscan_reset_min) * 0.05, 0.85);
             threats.push_back(make_threat(
                 "portscan", "portscan_stealth", "medium", conf, dev, ts, ip,
-                "High RST rate (" + std::to_string(resets) + ") — possible stealth scan",
+                "High RST rate (" + std::to_string(resets) + ") -- possible stealth scan",
                 "reset_count=" + std::to_string(resets)));
         }
 
@@ -432,7 +432,7 @@ private:
 
                     if (static_cast<int>(user_counts.size()) >= config_.brute_spray_unique_users
                         && user_counts.size() > 1) {
-                        // Many different usernames → password spray
+                        // Many different usernames -> password spray
                         sub = "bruteforce_password_spray";
                     }
                 }
@@ -446,7 +446,7 @@ private:
                     "bruteforce", sub,
                     (auth_failures >= config_.brute_standard_min * 2) ? "critical" : "high",
                     conf, dev, ts, ip,
-                    "Brute force attack detected — auth failure rate anomaly",
+                    "Brute force attack detected -- auth failure rate anomaly",
                     evidence.str()));
             }
         }
@@ -456,7 +456,7 @@ private:
             threats.push_back(make_threat(
                 "bruteforce", "bruteforce_standard", "high", 0.6, dev, ts, ip,
                 "High auth failure count (" + std::to_string(auth_failures)
-                + ") — possible brute force (baseline warming up)",
+                + ") -- possible brute force (baseline warming up)",
                 "auth_failures=" + std::to_string(auth_failures)));
         }
     }
@@ -484,7 +484,7 @@ private:
 
                 threats.push_back(make_threat(
                     "exfiltration", "exfil_volume_anomaly", "high", conf, dev, ts, ip,
-                    "Anomalous outbound data volume — possible data exfiltration",
+                    "Anomalous outbound data volume -- possible data exfiltration",
                     evidence.str()));
             }
         }
@@ -499,7 +499,7 @@ private:
                 double conf = baselines_.z_to_confidence(z);
                 threats.push_back(make_threat(
                     "exfiltration", "exfil_large_transfer", "medium", conf, dev, ts, ip,
-                    "Network in/out ratio anomaly — outbound surge relative to inbound",
+                    "Network in/out ratio anomaly -- outbound surge relative to inbound",
                     "ratio_z=" + std::to_string(z)));
             }
         }
@@ -533,7 +533,7 @@ private:
                 double cov = sd / mean;  // Coefficient of variation
 
                 if (cov < config_.c2_interval_jitter_max && cov > 0.001) {
-                    // Very regular intervals — suspicious
+                    // Very regular intervals -- suspicious
                     double conf = 0.4 + (config_.c2_interval_jitter_max - cov) / config_.c2_interval_jitter_max * 0.4;
 
                     std::stringstream evidence;
@@ -543,7 +543,7 @@ private:
 
                     threats.push_back(make_threat(
                         "c2_beaconing", "c2_periodic_beacon", "high", conf, dev, ts, ip,
-                        "Periodic callback pattern detected — low jitter interval (possible C2 beacon)",
+                        "Periodic callback pattern detected -- low jitter interval (possible C2 beacon)",
                         evidence.str()));
                 }
             }

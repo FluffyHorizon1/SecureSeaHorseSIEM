@@ -2,7 +2,7 @@
 #define ALERT_ENGINE_H
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 2: Log-Based Threshold Alerting Engine
+// SecureSeaHorse SIEM -- Phase 2: Log-Based Threshold Alerting Engine
 // =============================================================================
 // Provides:
 //   - Per-device, per-category event counting within a sliding time window
@@ -28,20 +28,20 @@
 struct SecurityEvent;
 
 // =============================================================================
-// ALERT CONFIG — Per-category thresholds
+// ALERT CONFIG -- Per-category thresholds
 // =============================================================================
 struct AlertThreshold {
     std::string category;    // Matches SecurityEvent.category
-    int         count;       // Number of events to trigger
-    int         window_sec;  // Time window in seconds
-    int         cooldown_sec;// Minimum seconds between alerts for same device+category
+    int         count = 0;       // Number of events to trigger
+    int         window_sec = 0;  // Time window in seconds
+    int         cooldown_sec = 0;// Minimum seconds between alerts for same device+category
 };
 
 struct AlertConfig {
     std::string alert_log_path = "alerts.log";
     bool        enabled        = true;
 
-    // Default thresholds — can be overridden from server.conf
+    // Default thresholds -- can be overridden from server.conf
     std::vector<AlertThreshold> thresholds;
 
     // Load defaults

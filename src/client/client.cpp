@@ -24,6 +24,10 @@
 #include "crypto_utils.h"    // Phase 3: HMAC, CRL, OCSP, heartbeat types
 #include "fim_common.h"      // Phase 6: FIM data structures
 #include "fim_scanner.h"     // Phase 6: File integrity scanner
+#include "process_monitor.h"     // Phase 11: Process monitoring
+#include "connection_inventory.h" // Phase 12: Connection inventory
+#include "session_tracker.h"     // Phase 13: Session & auth tracking
+#include "software_inventory.h"  // Phase 14: Software inventory
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -60,6 +64,7 @@ typedef int SOCKET;
 std::atomic<bool> g_running(true);
 
 void handle_signal(int sig) {
+    (void)sig;
     g_running = false;
 }
 
@@ -86,9 +91,16 @@ static std::atomic<int64_t>   last_pong_time_ms{0};
 // Phase 6: FIM state
 static std::unique_ptr<FimScanner> fim_scanner;
 static std::atomic<bool> fim_initial_scan_done{false};
+static std::unique_ptr<ProcessScanner>    proc_scanner;     // Phase 11
+static std::unique_ptr<ConnectionScanner> conn_scanner;     // Phase 12
+static std::unique_ptr<SessionScanner>    sess_scanner;     // Phase 13
+static std::unique_ptr<SoftwareScanner>   sw_scanner;       // Phase 14
+static std::atomic<bool> proc_initial_done{false};
+static std::atomic<bool> conn_initial_done{false};
+static std::atomic<bool> sw_initial_done{false};
 
 // =============================================================================
-// OPENSSL INITIALIZATION — Phase 3 Upgraded
+// OPENSSL INITIALIZATION -- Phase 3 Upgraded
 // =============================================================================
 void init_openssl() {
     SSL_load_error_strings();
@@ -124,6 +136,18 @@ SSL_CTX* create_client_context(const AppConfig& conf) {
     }
     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    // Disable legacy/insecure options
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3
+                          | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1
+                          | SSL_OP_NO_COMPRESSION
+                          | SSL_OP_NO_RENEGOTIATION);
+    SSL_CTX_set_cipher_list(ctx,
+        "ECDHE-ECDSA-AES256-GCM-SHA384:"
+        "ECDHE-RSA-AES256-GCM-SHA384:"
+        "ECDHE-ECDSA-CHACHA20-POLY1305:"
+        "ECDHE-RSA-CHACHA20-POLY1305:"
+        "ECDHE-ECDSA-AES128-GCM-SHA256:"
+        "ECDHE-RSA-AES128-GCM-SHA256");
 
     // =========================================================================
     // PHASE 3 [CRL]: Load Certificate Revocation List
@@ -133,7 +157,7 @@ SSL_CTX* create_client_context(const AppConfig& conf) {
         if (load_crl(ctx, crl_path)) {
             logger->log(AsyncLogger::INFO, "CRL loaded: " + crl_path);
         } else {
-            logger->log(AsyncLogger::WARN, "CRL load failed: " + crl_path + " — continuing without CRL.");
+            logger->log(AsyncLogger::WARN, "CRL load failed: " + crl_path + " -- continuing without CRL.");
         }
     }
 
@@ -413,7 +437,7 @@ bool send_telemetry_v1(SSL* ssl, const RawTelemetry& r_net) {
 // PHASE 6: SEND FIM REPORT
 // =============================================================================
 bool send_fim_report(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
-    if (!fim_scanner) return true;  // FIM disabled — not an error
+    if (!fim_scanner) return true;  // FIM disabled -- not an error
 
     // Perform scan
     auto snapshot = fim_scanner->scan();
@@ -459,6 +483,120 @@ bool send_fim_report(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
             + std::to_string(snapshot.size()) + " files)");
     }
 
+    return true;
+}
+
+// =============================================================================
+// PHASE 11: SEND PROCESS REPORT
+// =============================================================================
+bool send_process_report(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
+    if (!proc_scanner) return false;
+    auto procs = proc_scanner->scan();
+    auto changes = proc_scanner->diff(procs);
+
+    ProcessReport report;
+    report.device_id = device_id;
+    report.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    report.total_count = static_cast<uint32_t>(procs.size());
+    report.processes = procs;
+    report.changes = changes;
+
+    std::string data = serialize_process_report(report);
+    PacketHeaderV2 hdr = build_v2_header(MSG_PROCESS_REPORT, static_cast<uint32_t>(data.size()),
+        reinterpret_cast<const uint8_t*>(data.data()), hmac_key);
+    if (!send_exact_ssl(ssl, &hdr, sizeof(hdr))) return false;
+    if (!send_exact_ssl(ssl, data.data(), data.size())) return false;
+
+    proc_scanner->update_baseline(procs);
+    if (!proc_initial_done) {
+        proc_initial_done = true;
+        logger->log(AsyncLogger::INFO, "Process Monitor: baseline (" + std::to_string(procs.size()) + " processes)");
+    }
+    return true;
+}
+
+// =============================================================================
+// PHASE 12: SEND CONNECTION REPORT
+// =============================================================================
+bool send_connection_report(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
+    if (!conn_scanner) return false;
+    auto conns = conn_scanner->scan();
+    auto changes = conn_scanner->diff(conns);
+
+    ConnectionReport report;
+    report.device_id = device_id;
+    report.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    report.connections = conns;
+    report.changes = changes;
+
+    std::string data = serialize_connection_report(report);
+    PacketHeaderV2 hdr = build_v2_header(MSG_CONN_REPORT, static_cast<uint32_t>(data.size()),
+        reinterpret_cast<const uint8_t*>(data.data()), hmac_key);
+    if (!send_exact_ssl(ssl, &hdr, sizeof(hdr))) return false;
+    if (!send_exact_ssl(ssl, data.data(), data.size())) return false;
+
+    conn_scanner->update_baseline(conns);
+    if (!conn_initial_done) {
+        conn_initial_done = true;
+        logger->log(AsyncLogger::INFO, "Connection Monitor: baseline (" + std::to_string(conns.size()) + " connections)");
+    }
+    return true;
+}
+
+// =============================================================================
+// PHASE 13: SEND SESSION REPORT
+// =============================================================================
+bool send_session_report(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
+    if (!sess_scanner) return false;
+    auto sessions = sess_scanner->scan_sessions();
+    auto auth_events = sess_scanner->collect_auth_events();
+
+    SessionReport report;
+    report.device_id = device_id;
+    report.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    report.active_sessions = sessions;
+    report.auth_events = auth_events;
+    report.failed_logins = 0;
+    for (const auto& e : auth_events)
+        if (e.type == AuthEventType::AUTH_LOGIN_FAILED) report.failed_logins++;
+
+    std::string data = serialize_session_report(report);
+    PacketHeaderV2 hdr = build_v2_header(MSG_SESSION_REPORT, static_cast<uint32_t>(data.size()),
+        reinterpret_cast<const uint8_t*>(data.data()), hmac_key);
+    if (!send_exact_ssl(ssl, &hdr, sizeof(hdr))) return false;
+    if (!send_exact_ssl(ssl, data.data(), data.size())) return false;
+    return true;
+}
+
+// =============================================================================
+// PHASE 14: SEND SOFTWARE REPORT
+// =============================================================================
+bool send_software_report(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
+    if (!sw_scanner) return false;
+    auto sw = sw_scanner->scan();
+    auto changes = sw_scanner->diff(sw);
+
+    SoftwareReport report;
+    report.device_id = device_id;
+    report.timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    report.software = sw;
+    report.changes = changes;
+
+    std::string data = serialize_software_report(report);
+    PacketHeaderV2 hdr = build_v2_header(MSG_SOFTWARE_REPORT, static_cast<uint32_t>(data.size()),
+        reinterpret_cast<const uint8_t*>(data.data()), hmac_key);
+    if (!send_exact_ssl(ssl, &hdr, sizeof(hdr))) return false;
+    if (!send_exact_ssl(ssl, data.data(), data.size())) return false;
+
+    sw_scanner->update_baseline(sw);
+    if (!sw_initial_done) {
+        sw_initial_done = true;
+        logger->log(AsyncLogger::INFO, "Software Inventory: baseline (" + std::to_string(sw.size()) + " packages)");
+    }
     return true;
 }
 
@@ -522,7 +660,7 @@ void heartbeat_receiver_thread(SSL* ssl) {
             logger->log(AsyncLogger::DEBUG, "Heartbeat PONG received");
         }
         else {
-            // Unexpected message from server — skip payload
+            // Unexpected message from server -- skip payload
             if (plen > 0 && plen < 65536) {
                 std::vector<char> buf(plen);
                 recv_exact_ssl(ssl, buf.data(), plen);
@@ -532,7 +670,7 @@ void heartbeat_receiver_thread(SSL* ssl) {
 }
 
 // =============================================================================
-// MAIN — Phase 3 Upgraded
+// MAIN -- Phase 3 Upgraded
 // =============================================================================
 int main(int argc, char* argv[]) {
     std::signal(SIGINT, handle_signal);
@@ -548,7 +686,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (cli.show_version) {
-        std::cout << "SecureSeaHorse Client v1.6.0 (Phase 6)\n";
+        std::cout << "SecureSeaHorse Client v2.5.0 (Phase 15)\n";
         return 0;
     }
 
@@ -582,7 +720,7 @@ int main(int argc, char* argv[]) {
         logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
     }
 
-    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v1.6.0 (Phase 6) starting ===");
+    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v2.5.0 (Phase 15) starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
     logger->log(AsyncLogger::INFO, "Target: " + server_ip + ":" + std::to_string(port)
                  + " | Device ID: " + std::to_string(my_id));
@@ -648,6 +786,59 @@ int main(int argc, char* argv[]) {
         }
     } else {
         logger->log(AsyncLogger::INFO, "FIM: disabled.");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 11: Process Monitor
+    // -------------------------------------------------------------------------
+    bool proc_enabled = conf.get_bool("process_monitor_enabled", true);
+    int  proc_interval = conf.get_int("process_scan_interval_s", 60);
+    if (proc_enabled) {
+        ProcessMonitorConfig pcfg;
+        pcfg.enabled = true;
+        pcfg.scan_interval_s = proc_interval;
+        pcfg.track_cmdline = conf.get_bool("process_track_cmdline", true);
+        proc_scanner = std::make_unique<ProcessScanner>(pcfg);
+        logger->log(AsyncLogger::INFO, "Process Monitor: ENABLED | scan every " + std::to_string(proc_interval) + "s");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 12: Connection Inventory
+    // -------------------------------------------------------------------------
+    bool conn_enabled = conf.get_bool("connection_monitor_enabled", true);
+    int  conn_interval = conf.get_int("connection_scan_interval_s", 60);
+    if (conn_enabled) {
+        ConnectionScannerConfig ccfg;
+        ccfg.enabled = true;
+        ccfg.scan_interval_s = conn_interval;
+        conn_scanner = std::make_unique<ConnectionScanner>(ccfg);
+        logger->log(AsyncLogger::INFO, "Connection Monitor: ENABLED | scan every " + std::to_string(conn_interval) + "s");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 13: Session & Auth Tracker
+    // -------------------------------------------------------------------------
+    bool sess_enabled = conf.get_bool("session_tracker_enabled", true);
+    int  sess_interval = conf.get_int("session_scan_interval_s", 60);
+    if (sess_enabled) {
+        SessionScannerConfig scfg;
+        scfg.enabled = true;
+        scfg.scan_interval_s = sess_interval;
+        sess_scanner = std::make_unique<SessionScanner>(scfg);
+        logger->log(AsyncLogger::INFO, "Session Tracker: ENABLED | scan every " + std::to_string(sess_interval) + "s");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 14: Software Inventory
+    // -------------------------------------------------------------------------
+    bool sw_enabled = conf.get_bool("software_inventory_enabled", true);
+    int  sw_interval = conf.get_int("software_scan_interval_s", 3600);
+    if (sw_enabled) {
+        SoftwareScannerConfig swcfg;
+        swcfg.enabled = true;
+        swcfg.scan_interval_s = sw_interval;
+        sw_scanner = std::make_unique<SoftwareScanner>(swcfg);
+        logger->log(AsyncLogger::INFO, "Software Inventory: ENABLED | scan every " + std::to_string(sw_interval) + "s");
     }
 
     if (!is_elevated()) logger->log(AsyncLogger::WARN, "Not running as Admin/Root. Log scraping may fail.");
@@ -723,14 +914,14 @@ int main(int argc, char* argv[]) {
                 SSL_shutdown(ssl);
                 SSL_free(ssl);
                 closesocket(s);
-                // Don't retry with backoff — this is a hard security failure
+                // Don't retry with backoff -- this is a hard security failure
                 std::this_thread::sleep_for(std::chrono::seconds(5));
                 continue;
             }
             logger->log(AsyncLogger::INFO, "Certificate pin verified.");
         }
 
-        // Connection successful — reset backoff
+        // Connection successful -- reset backoff
         backoff.reset();
         logger->log(AsyncLogger::INFO, "TLS Established: " + std::string(SSL_get_cipher(ssl)));
 
@@ -745,7 +936,7 @@ int main(int argc, char* argv[]) {
                 hmac_active = true;
                 logger->log(AsyncLogger::INFO, "HMAC-SHA256: session key derived (protocol v2).");
             } else {
-                logger->log(AsyncLogger::WARN, "HMAC key derivation failed — falling back to CRC32 (v1).");
+                logger->log(AsyncLogger::WARN, "HMAC key derivation failed -- falling back to CRC32 (v1).");
             }
         }
 
@@ -803,11 +994,19 @@ int main(int argc, char* argv[]) {
         }
 
         // =====================================================================
-        // 4. Telemetry + Heartbeat + FIM Transmission Loop
+        // 4. Telemetry + Heartbeat + FIM + Agent Scans Loop
         // =====================================================================
         auto last_heartbeat = std::chrono::steady_clock::now();
         auto last_fim_scan  = std::chrono::steady_clock::now() -
-                              std::chrono::seconds(fim_scan_interval);  // Trigger immediately on first iteration
+                              std::chrono::seconds(fim_scan_interval);
+        auto last_proc_scan = std::chrono::steady_clock::now() -
+                              std::chrono::seconds(proc_interval);
+        auto last_conn_scan = std::chrono::steady_clock::now() -
+                              std::chrono::seconds(conn_interval);
+        auto last_sess_scan = std::chrono::steady_clock::now() -
+                              std::chrono::seconds(sess_interval);
+        auto last_sw_scan   = std::chrono::steady_clock::now() -
+                              std::chrono::seconds(sw_interval);  // Trigger immediately on first iteration
 
         while (g_running && session_alive) {
             // --- Gather telemetry ---
@@ -866,7 +1065,7 @@ int main(int argc, char* argv[]) {
                     now_tp.time_since_epoch()).count();
                 int64_t last_pong = last_pong_time_ms.load();
                 if ((now_epoch - last_pong) > (heartbeat_timeout * 1000)) {
-                    logger->log(AsyncLogger::WARN, "Heartbeat timeout — no pong in "
+                    logger->log(AsyncLogger::WARN, "Heartbeat timeout -- no pong in "
                                  + std::to_string(heartbeat_timeout) + "s. Reconnecting.");
                     break;
                 }
@@ -878,6 +1077,42 @@ int main(int argc, char* argv[]) {
                 if (since_fim >= std::chrono::seconds(fim_scan_interval)) {
                     if (!send_fim_report(ssl, my_id, hmac_key)) break;
                     last_fim_scan = std::chrono::steady_clock::now();
+                }
+            }
+
+            // --- Phase 11: Process scan ---
+            if (proc_scanner && hmac_active) {
+                auto since = std::chrono::steady_clock::now() - last_proc_scan;
+                if (since >= std::chrono::seconds(proc_interval)) {
+                    if (!send_process_report(ssl, my_id, hmac_key)) break;
+                    last_proc_scan = std::chrono::steady_clock::now();
+                }
+            }
+
+            // --- Phase 12: Connection scan ---
+            if (conn_scanner && hmac_active) {
+                auto since = std::chrono::steady_clock::now() - last_conn_scan;
+                if (since >= std::chrono::seconds(conn_interval)) {
+                    if (!send_connection_report(ssl, my_id, hmac_key)) break;
+                    last_conn_scan = std::chrono::steady_clock::now();
+                }
+            }
+
+            // --- Phase 13: Session scan ---
+            if (sess_scanner && hmac_active) {
+                auto since = std::chrono::steady_clock::now() - last_sess_scan;
+                if (since >= std::chrono::seconds(sess_interval)) {
+                    if (!send_session_report(ssl, my_id, hmac_key)) break;
+                    last_sess_scan = std::chrono::steady_clock::now();
+                }
+            }
+
+            // --- Phase 14: Software scan ---
+            if (sw_scanner && hmac_active) {
+                auto since = std::chrono::steady_clock::now() - last_sw_scan;
+                if (since >= std::chrono::seconds(sw_interval)) {
+                    if (!send_software_report(ssl, my_id, hmac_key)) break;
+                    last_sw_scan = std::chrono::steady_clock::now();
                 }
             }
 

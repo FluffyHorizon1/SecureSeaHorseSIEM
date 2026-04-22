@@ -2,6 +2,9 @@
 #define SERVER_PROTOCOL_H
 
 #define _CRT_SECURE_NO_WARNINGS 
+#ifndef NOMINMAX
+#define NOMINMAX  // Prevent Windows min/max macro conflicts
+#endif 
 #if defined(_MSC_VER) && !defined(_WIN32)
 #define _WIN32
 #endif
@@ -38,36 +41,36 @@ constexpr const char* DEFAULT_CONFIG_PATH = "server.conf";
 // =============================================================================
 #pragma pack(push, 1)
 struct PacketHeader {
-    uint32_t magic;
-    uint16_t version;
-    uint32_t payload_len;
-    uint32_t checksum;
+    uint32_t magic = 0;
+    uint16_t version = 0;
+    uint32_t payload_len = 0;
+    uint32_t checksum = 0;
 };
 
 struct RawTelemetry {
-    uint16_t struct_version;
-    int32_t device_id;
-    int64_t timestamp_ms;
+    uint16_t struct_version = 0;
+    int32_t device_id = 0;
+    int64_t timestamp_ms = 0;
 
-    char machine_name[64];
-    char machine_ip[32];
-    char os_user[32];
+    char machine_name[64] = {};
+    char machine_ip[32] = {};
+    char os_user[32] = {};
 
-    uint64_t cpu_idle_ticks;
-    uint64_t cpu_kernel_ticks;
-    uint64_t cpu_user_ticks;
+    uint64_t cpu_idle_ticks = 0;
+    uint64_t cpu_kernel_ticks = 0;
+    uint64_t cpu_user_ticks = 0;
 
-    uint64_t ram_total_bytes;
-    uint64_t ram_avail_bytes;
+    uint64_t ram_total_bytes = 0;
+    uint64_t ram_avail_bytes = 0;
 
-    uint64_t disk_total_bytes;
-    uint64_t disk_free_bytes;
+    uint64_t disk_total_bytes = 0;
+    uint64_t disk_free_bytes = 0;
 
-    uint64_t net_bytes_in;
-    uint64_t net_bytes_out;
+    uint64_t net_bytes_in = 0;
+    uint64_t net_bytes_out = 0;
 
-    char raw_log_chunk[512];
-    uint8_t extension_block[128];
+    char raw_log_chunk[512] = {};
+    uint8_t extension_block[128] = {};
 };
 #pragma pack(pop)
 
@@ -115,6 +118,15 @@ struct AppConfig {
     int get_int(const std::string& key, int def) const {
         try { return data.count(key) ? std::stoi(data.at(key)) : def; }
         catch (...) { return def; }
+    }
+
+    // Like get_int but clamps the returned value to [min, max]. Use for any
+    // config key that drives resource allocation, thread counts, intervals, etc.
+    int get_int_clamped(const std::string& key, int def, int min_v, int max_v) const {
+        int v = get_int(key, def);
+        if (v < min_v) return min_v;
+        if (v > max_v) return max_v;
+        return v;
     }
 
     size_t get_size(const std::string& key, size_t def) const {
@@ -178,9 +190,9 @@ inline void print_server_usage(const char* prog) {
               << "  -s, --set <key=value>  Override a config value (repeatable)\n"
               << "  -h, --help             Show this help message\n"
               << "  -v, --version          Show version\n"
-              << "\nPhase 1 — Thread Pool:\n"
+              << "\nPhase 1 -- Thread Pool:\n"
               << "  pool_min / pool_max / pool_idle_timeout_s\n"
-              << "\nPhase 2 — Data Intelligence:\n"
+              << "\nPhase 2 -- Data Intelligence:\n"
               << "  db_enabled / db_host / db_port / db_name / db_user / db_pass\n"
               << "  rules_file             Path to regex rules (default: rules.conf)\n"
               << "  alert_enabled / alert_log\n";
@@ -236,8 +248,8 @@ private:
         log_file_.close();
         std::remove((base_filename_ + "." + std::to_string(max_rotated_files_)).c_str());
         for (int i = max_rotated_files_ - 1; i >= 1; i--)
-            std::rename((base_filename_ + "." + std::to_string(i)).c_str(), (base_filename_ + "." + std::to_string(i + 1)).c_str());
-        std::rename(base_filename_.c_str(), (base_filename_ + ".1").c_str());
+            (void)std::rename((base_filename_ + "." + std::to_string(i)).c_str(), (base_filename_ + "." + std::to_string(i + 1)).c_str());
+        (void)std::rename(base_filename_.c_str(), (base_filename_ + ".1").c_str());
         log_file_.open(base_filename_, std::ios::app);
         current_file_size_ = 0;
     }

@@ -6,7 +6,7 @@
 #endif
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 3: Cryptographic Utilities
+// SecureSeaHorse SIEM -- Phase 3: Cryptographic Utilities
 // =============================================================================
 // Provides:
 //   - HMAC-SHA256 payload signing/verification (replaces CRC32)
@@ -20,6 +20,14 @@
 #include <string>
 #include <vector>
 #include <iostream>
+
+#if defined(_WIN32)
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#endif
 
 #include <openssl/ssl.h>
 #include <openssl/hmac.h>
@@ -43,17 +51,21 @@ static const char* const EKM_LABEL = "SEAHORSE_SIEM_HMAC_V1";
 constexpr size_t EKM_LABEL_LEN = 22;  // strlen("SEAHORSE_SIEM_HMAC_V1")
 
 // =============================================================================
-// PROTOCOL V2 — Message Types
+// PROTOCOL V2 -- Message Types
 // =============================================================================
 enum MsgType : uint8_t {
     MSG_TELEMETRY      = 0x00,  // Standard telemetry report
-    MSG_HEARTBEAT_PING = 0x01,  // Client → Server keep-alive ping
-    MSG_HEARTBEAT_PONG = 0x02,  // Server → Client keep-alive pong
+    MSG_HEARTBEAT_PING = 0x01,  // Client -> Server keep-alive ping
+    MSG_HEARTBEAT_PONG = 0x02,  // Server -> Client keep-alive pong
     MSG_FIM_REPORT     = 0x03,  // Phase 6: File Integrity Monitoring snapshot
+    MSG_PROCESS_REPORT = 0x04,  // Phase 11: Process snapshot
+    MSG_CONN_REPORT    = 0x05,  // Phase 12: Network connection inventory
+    MSG_SESSION_REPORT = 0x06,  // Phase 13: User session & auth events
+    MSG_SOFTWARE_REPORT = 0x07, // Phase 14: Software & patch inventory
 };
 
 // =============================================================================
-// PROTOCOL V2 — Packet Header (replaces v1 PacketHeader)
+// PROTOCOL V2 -- Packet Header (replaces v1 PacketHeader)
 // =============================================================================
 // v1 header: magic(4) + version(2) + payload_len(4) + crc32(4)     = 14 bytes
 // v2 header: magic(4) + version(2) + msg_type(1) + payload_len(4)
@@ -64,12 +76,12 @@ enum MsgType : uint8_t {
 // =============================================================================
 #pragma pack(push, 1)
 struct PacketHeaderV2 {
-    uint32_t magic;            // PROTOCOL_MAGIC (0xDEADBEEF)
-    uint16_t version;          // 2 for Phase 3+
-    uint8_t  msg_type;         // MsgType enum
-    uint32_t payload_len;      // Payload size in bytes (0 for heartbeats)
-    uint8_t  hmac[HMAC_DIGEST_LEN]; // HMAC-SHA256 of payload
-    uint8_t  reserved;         // Pad to even alignment, set to 0
+    uint32_t magic = 0;            // PROTOCOL_MAGIC (0xDEADBEEF)
+    uint16_t version = 0;          // 2 for Phase 3+
+    uint8_t  msg_type = 0;         // MsgType enum
+    uint32_t payload_len = 0;      // Payload size in bytes (0 for heartbeats)
+    uint8_t  hmac[HMAC_DIGEST_LEN] = {}; // HMAC-SHA256 of payload
+    uint8_t  reserved = 0;         // Pad to even alignment, set to 0
 };
 #pragma pack(pop)
 
@@ -80,14 +92,14 @@ static_assert(sizeof(PacketHeaderV2) == 44, "PacketHeaderV2 must be 44 bytes");
 // =============================================================================
 #pragma pack(push, 1)
 struct HeartbeatPayload {
-    int64_t  timestamp_ms;     // Sender's wall-clock timestamp
-    int32_t  device_id;        // Sender's device_id (0 for server)
-    uint32_t seq;              // Sequence number (monotonic per session)
+    int64_t  timestamp_ms = 0;     // Sender's wall-clock timestamp
+    int32_t  device_id = 0;        // Sender's device_id (0 for server)
+    uint32_t seq = 0;              // Sequence number (monotonic per session)
 };
 #pragma pack(pop)
 
 // =============================================================================
-// HMAC KEY DERIVATION — From TLS Session
+// HMAC KEY DERIVATION -- From TLS Session
 // =============================================================================
 // Uses RFC 5705 Exported Keying Material so both sides derive the
 // same HMAC key from the TLS master secret without transmitting it.
@@ -108,7 +120,7 @@ inline bool derive_hmac_key(SSL* ssl, uint8_t* key_out) {
 }
 
 // =============================================================================
-// HMAC-SHA256 — Compute
+// HMAC-SHA256 -- Compute
 // =============================================================================
 // Signs the payload data and writes HMAC_DIGEST_LEN bytes into hmac_out.
 // Returns true on success.
@@ -129,7 +141,7 @@ inline bool compute_hmac(const uint8_t* key, size_t key_len,
 }
 
 // =============================================================================
-// HMAC-SHA256 — Verify
+// HMAC-SHA256 -- Verify
 // =============================================================================
 // Computes HMAC of data and compares with expected_hmac using constant-time
 // comparison to prevent timing attacks.
@@ -148,7 +160,7 @@ inline bool verify_hmac(const uint8_t* key, size_t key_len,
 }
 
 // =============================================================================
-// BUILD V2 HEADER — Helper to construct a signed packet header
+// BUILD V2 HEADER -- Helper to construct a signed packet header
 // =============================================================================
 inline PacketHeaderV2 build_v2_header(MsgType type, uint32_t payload_len,
                                        const uint8_t* payload_data,
@@ -184,7 +196,7 @@ inline PacketHeaderV2 build_v2_header(MsgType type, uint32_t payload_len,
 }
 
 // =============================================================================
-// CRL LOADING — Add Certificate Revocation List to SSL_CTX
+// CRL LOADING -- Add Certificate Revocation List to SSL_CTX
 // =============================================================================
 // Loads a PEM-formatted CRL file and enables CRL checking on the
 // X509 verification store. Returns true on success.
@@ -228,7 +240,7 @@ inline bool load_crl(SSL_CTX* ctx, const std::string& crl_path) {
 }
 
 // =============================================================================
-// OCSP STAPLING — Client-side callback to verify stapled OCSP response
+// OCSP STAPLING -- Client-side callback to verify stapled OCSP response
 // =============================================================================
 // This callback is invoked during TLS handshake when the server provides
 // a stapled OCSP response. Returns 1 to continue, 0 to abort.
@@ -238,14 +250,14 @@ inline int ocsp_client_callback(SSL* ssl, void* arg) {
     long resp_len = SSL_get_tlsext_status_ocsp_resp(ssl, &resp_data);
 
     if (!resp_data || resp_len <= 0) {
-        // No OCSP response stapled — this is acceptable (soft fail).
+        // No OCSP response stapled -- this is acceptable (soft fail).
         // Set ocsp_must_staple=true in config to make this a hard failure.
         bool* must_staple = static_cast<bool*>(arg);
         if (must_staple && *must_staple) {
             std::cerr << "[OCSP] No stapled response and must_staple=true. Rejecting.\n";
             return 0;  // Hard fail
         }
-        return 1;  // Soft fail — continue without OCSP
+        return 1;  // Soft fail -- continue without OCSP
     }
 
     // Parse the OCSP response
@@ -267,7 +279,7 @@ inline int ocsp_client_callback(SSL* ssl, void* arg) {
 }
 
 // =============================================================================
-// OCSP STAPLING — Server-side: enable status request in context
+// OCSP STAPLING -- Server-side: enable status request in context
 // =============================================================================
 // Call this on the server SSL_CTX to indicate it supports OCSP stapling.
 // The actual OCSP response must be loaded separately via a callback or file.
@@ -277,7 +289,7 @@ inline void enable_ocsp_stapling_server(SSL_CTX* ctx) {
 }
 
 // =============================================================================
-// OCSP STAPLING — Client-side: request stapled OCSP during handshake
+// OCSP STAPLING -- Client-side: request stapled OCSP during handshake
 // =============================================================================
 inline void enable_ocsp_stapling_client(SSL_CTX* ctx, bool* must_staple_flag) {
     SSL_CTX_set_tlsext_status_type(ctx, TLSEXT_STATUSTYPE_ocsp);
@@ -286,7 +298,7 @@ inline void enable_ocsp_stapling_client(SSL_CTX* ctx, bool* must_staple_flag) {
 }
 
 // =============================================================================
-// CERTIFICATE PINNING — Optional additional validation
+// CERTIFICATE PINNING -- Optional additional validation
 // =============================================================================
 // Extracts the SHA-256 fingerprint of the peer certificate and compares
 // it against a configured pin. Returns true if the pin matches.

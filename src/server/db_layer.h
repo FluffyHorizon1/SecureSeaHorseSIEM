@@ -2,7 +2,7 @@
 #define DB_LAYER_H
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 2+4+5+6: PostgreSQL Persistence Layer
+// SecureSeaHorse SIEM -- Phase 2+4+5+6: PostgreSQL Persistence Layer
 // =============================================================================
 // Provides:
 //   - Auto-schema creation (telemetry + security_events + threat_detections + ioc_matches + fim_events)
@@ -20,7 +20,7 @@
 
 #include <libpq-fe.h>
 
-// Forward declaration — logger must be defined externally (from server_protocol.h)
+// Forward declaration -- logger must be defined externally (from server_protocol.h)
 class AsyncLogger;
 
 // =============================================================================
@@ -260,6 +260,176 @@ public:
         return exec_params(sql, 12, params);
     }
 
+    // =========================================================================
+    // PHASE 7: QUERY METHODS (for REST API)
+    // =========================================================================
+
+    // Helper: Execute a SELECT and return results as a JSON array string
+    std::string query_json(const char* sql, int n_params = 0,
+                            const char* const* params = nullptr, int limit = 50)
+    {
+        if (!config_.enabled || !conn_) return "[]";
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+
+        // Append LIMIT if not already in the query
+        std::string full_sql = sql;
+        if (full_sql.find("LIMIT") == std::string::npos) {
+            full_sql += " LIMIT " + std::to_string(limit);
+        }
+
+        PGresult* res = (n_params > 0)
+            ? PQexecParams(conn_, full_sql.c_str(), n_params, nullptr, params, nullptr, nullptr, 0)
+            : PQexec(conn_, full_sql.c_str());
+
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+            if (res) PQclear(res);
+            return "[]";
+        }
+
+        int rows = PQntuples(res);
+        int cols = PQnfields(res);
+
+        std::string json = "[";
+        for (int r = 0; r < rows; r++) {
+            if (r > 0) json += ",";
+            json += "{";
+            for (int c = 0; c < cols; c++) {
+                if (c > 0) json += ",";
+                std::string col_name = PQfname(res, c);
+                std::string val = PQgetisnull(res, r, c) ? "" : PQgetvalue(res, r, c);
+                // Escape JSON special chars in value
+                std::string escaped;
+                for (char ch : val) {
+                    switch (ch) {
+                        case '"':  escaped += "\\\""; break;
+                        case '\\': escaped += "\\\\"; break;
+                        case '\n': escaped += "\\n";  break;
+                        case '\r': escaped += "\\r";  break;
+                        case '\t': escaped += "\\t";  break;
+                        default:   escaped += ch;     break;
+                    }
+                }
+                json += "\"" + col_name + "\":\"" + escaped + "\"";
+            }
+            json += "}";
+        }
+        json += "]";
+
+        PQclear(res);
+        return json;
+    }
+
+    // Convenience: Query recent threat detections
+    std::string query_threats(int limit = 50, int device_id = -1) {
+        if (device_id >= 0) {
+            std::string s_dev = std::to_string(device_id);
+            const char* params[1] = { s_dev.c_str() };
+            return query_json(
+                "SELECT device_id, timestamp_ms, machine_ip, category, sub_type, "
+                "severity, confidence, mitre_id, mitre_name, description "
+                "FROM threat_detections WHERE device_id = $1 "
+                "ORDER BY received_at DESC", 1, params, limit);
+        }
+        return query_json(
+            "SELECT device_id, timestamp_ms, machine_ip, category, sub_type, "
+            "severity, confidence, mitre_id, mitre_name, description "
+            "FROM threat_detections ORDER BY received_at DESC", 0, nullptr, limit);
+    }
+
+    // Convenience: Query recent IoC matches
+    std::string query_ioc_matches(int limit = 50, int device_id = -1) {
+        if (device_id >= 0) {
+            std::string s_dev = std::to_string(device_id);
+            const char* params[1] = { s_dev.c_str() };
+            return query_json(
+                "SELECT device_id, timestamp_ms, machine_ip, ioc_type, ioc_value, "
+                "severity, feed_source, matched_in, mitre_id, description, tags "
+                "FROM ioc_matches WHERE device_id = $1 "
+                "ORDER BY received_at DESC", 1, params, limit);
+        }
+        return query_json(
+            "SELECT device_id, timestamp_ms, machine_ip, ioc_type, ioc_value, "
+            "severity, feed_source, matched_in, mitre_id, description, tags "
+            "FROM ioc_matches ORDER BY received_at DESC", 0, nullptr, limit);
+    }
+
+    // Convenience: Query recent FIM events
+    std::string query_fim_events(int limit = 50, int device_id = -1) {
+        if (device_id >= 0) {
+            std::string s_dev = std::to_string(device_id);
+            const char* params[1] = { s_dev.c_str() };
+            return query_json(
+                "SELECT device_id, timestamp_ms, machine_ip, change_type, file_path, "
+                "old_hash, new_hash, old_size, new_size, severity, mitre_id, description "
+                "FROM fim_events WHERE device_id = $1 "
+                "ORDER BY received_at DESC", 1, params, limit);
+        }
+        return query_json(
+            "SELECT device_id, timestamp_ms, machine_ip, change_type, file_path, "
+            "old_hash, new_hash, old_size, new_size, severity, mitre_id, description "
+            "FROM fim_events ORDER BY received_at DESC", 0, nullptr, limit);
+    }
+
+    // Convenience: Query recent security events
+    std::string query_security_events(int limit = 50, int device_id = -1) {
+        if (device_id >= 0) {
+            std::string s_dev = std::to_string(device_id);
+            const char* params[1] = { s_dev.c_str() };
+            return query_json(
+                "SELECT device_id, timestamp_ms, machine_ip, rule_name, category, "
+                "severity, matched_text "
+                "FROM security_events WHERE device_id = $1 "
+                "ORDER BY received_at DESC", 1, params, limit);
+        }
+        return query_json(
+            "SELECT device_id, timestamp_ms, machine_ip, rule_name, category, "
+            "severity, matched_text "
+            "FROM security_events ORDER BY received_at DESC", 0, nullptr, limit);
+    }
+
+    // Convenience: Count rows in a table
+    int64_t count_table(const std::string& table) {
+        if (!config_.enabled || !conn_) return 0;
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        std::string sql = "SELECT COUNT(*) FROM " + table;
+        PGresult* res = PQexec(conn_, sql.c_str());
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+            if (res) PQclear(res);
+            return 0;
+        }
+        int64_t count = 0;
+        if (PQntuples(res) > 0) {
+            try { count = std::stoll(PQgetvalue(res, 0, 0)); } catch (...) {}
+        }
+        PQclear(res);
+        return count;
+    }
+
+    // Convenience: Count distinct devices in telemetry (last 5 minutes)
+    int64_t count_online_devices(int window_seconds = 300) {
+        if (!config_.enabled || !conn_) return 0;
+        // Clamp to sane range to avoid pathological integer values in SQL
+        if (window_seconds < 1) window_seconds = 1;
+        if (window_seconds > 86400) window_seconds = 86400;  // Max 1 day
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        std::string sql =
+            "SELECT COUNT(DISTINCT device_id) FROM telemetry "
+            "WHERE received_at > NOW() - INTERVAL '" + std::to_string(window_seconds) + " seconds'";
+        PGresult* res = PQexec(conn_, sql.c_str());
+        if (!res || PQresultStatus(res) != PGRES_TUPLES_OK) {
+            if (res) PQclear(res);
+            return 0;
+        }
+        int64_t count = 0;
+        if (PQntuples(res) > 0) {
+            try { count = std::stoll(PQgetvalue(res, 0, 0)); } catch (...) {}
+        }
+        PQclear(res);
+        return count;
+    }
+
+    // =========================================================================
+
     // -------------------------------------------------------------------------
     // STATUS: Check if connected
     // -------------------------------------------------------------------------
@@ -286,7 +456,7 @@ private:
     PGconn*      conn_;
     std::mutex   conn_mutex_;
 
-    // Logging helper — uses logger if available, otherwise stderr
+    // Logging helper -- uses logger if available, otherwise stderr
     void log_msg(const std::string& msg, bool is_error = false);
 
     // Connect (internal, assumes lock is NOT held by caller)
@@ -341,7 +511,7 @@ private:
             log_msg("DB INSERT failed: " + err, true);
             PQclear(res);
 
-            // Check if connection died — reset for next attempt
+            // Check if connection died -- reset for next attempt
             if (PQstatus(conn_) != CONNECTION_OK) {
                 PQfinish(conn_);
                 conn_ = nullptr;

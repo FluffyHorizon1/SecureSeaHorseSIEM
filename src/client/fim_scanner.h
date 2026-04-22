@@ -6,7 +6,7 @@
 #endif
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 6: Client-Side FIM Scanner
+// SecureSeaHorse SIEM -- Phase 6: Client-Side FIM Scanner
 // =============================================================================
 // Provides:
 //   - Recursive directory scanning with configurable watch paths
@@ -36,7 +36,7 @@ namespace fs = std::filesystem;
 struct FimScannerConfig {
     bool enabled = true;
 
-    // Watch paths — directories and individual files to monitor
+    // Watch paths -- directories and individual files to monitor
     std::vector<std::string> watch_paths;
 
     // Exclusion patterns
@@ -44,7 +44,7 @@ struct FimScannerConfig {
     std::vector<std::string> exclude_prefixes;    // e.g. "/tmp/", "/proc/"
 
     // Limits
-    uint64_t max_file_size    = 100 * 1024 * 1024;  // 100MB — skip larger files
+    uint64_t max_file_size    = 100 * 1024 * 1024;  // 100MB -- skip larger files
     int      max_files        = 50000;                // Safety limit per scan
     int      max_depth        = 20;                   // Max directory recursion depth
     int      scan_interval_s  = 300;                  // Seconds between full scans
@@ -113,7 +113,7 @@ public:
         for (const auto& [path, curr_entry] : curr_map) {
             auto it = base_map.find(path);
             if (it == base_map.end()) {
-                // New file — ADDED
+                // New file -- ADDED
                 FimChange c;
                 c.type      = FimChangeType::FIM_ADDED;
                 c.path      = path;
@@ -124,7 +124,7 @@ public:
                 c.old_mtime = 0;
                 changes.push_back(std::move(c));
             } else {
-                // Exists in both — check if modified
+                // Exists in both -- check if modified
                 const FimEntry* base_entry = it->second;
                 if (base_entry->sha256 != curr_entry->sha256) {
                     FimChange c;
@@ -160,7 +160,7 @@ public:
     }
 
     // =========================================================================
-    // SNAPSHOT MANAGEMENT — Thread-safe baseline storage
+    // SNAPSHOT MANAGEMENT -- Thread-safe baseline storage
     // =========================================================================
     void update_baseline(const std::vector<FimEntry>& snapshot) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -219,18 +219,21 @@ private:
                 if (abs_path.find(prefix) == 0) return;
             }
 
-            // Check file size
-            auto fsize = fs::file_size(filepath);
-            if (fsize > config_.max_file_size) return;
-
-            // Get modification time
+            // Get modification time (one stat call before hashing)
             auto ftime = fs::last_write_time(filepath);
             auto duration = ftime.time_since_epoch();
             auto seconds = std::chrono::duration_cast<std::chrono::seconds>(duration);
             int64_t mtime = seconds.count();
 
-            // Hash the file
-            std::string hash = sha256_file(abs_path);
+            // Pre-flight size check (cheap) -- skip oversized files before opening
+            auto fsize = fs::file_size(filepath);
+            if (fsize > config_.max_file_size) return;
+
+            // Hash + measure in a single pass. If the file grew beyond
+            // max_file_size between the pre-flight check and the read, hash
+            // returns empty and the entry is dropped.
+            uint64_t actual_size = 0;
+            std::string hash = sha256_file(abs_path, config_.max_file_size, &actual_size);
             if (hash.empty()) {
                 scan_errors_++;
                 return;
@@ -241,7 +244,7 @@ private:
             FimEntry entry;
             entry.path        = abs_path;
             entry.sha256      = hash;
-            entry.size_bytes  = static_cast<uint64_t>(fsize);
+            entry.size_bytes  = actual_size;  // Use actually-read size, not pre-flight
             entry.mtime_epoch = mtime;
             snapshot.push_back(std::move(entry));
 

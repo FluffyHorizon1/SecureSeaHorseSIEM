@@ -6,7 +6,7 @@
 #endif
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 2: Regex-Based Log Analysis Engine
+// SecureSeaHorse SIEM -- Phase 2: Regex-Based Log Analysis Engine
 // =============================================================================
 // Provides:
 //   - Built-in default patterns for Linux syslog + Windows EventLog
@@ -25,7 +25,7 @@
 #include <iostream>
 
 // =============================================================================
-// SECURITY EVENT — Output structure from the regex engine
+// SECURITY EVENT -- Output structure from the regex engine
 // =============================================================================
 struct SecurityEvent {
     std::string rule_name;     // e.g. "ssh_failed_password"
@@ -35,7 +35,7 @@ struct SecurityEvent {
 };
 
 // =============================================================================
-// DETECTION RULE — One compiled regex with metadata
+// DETECTION RULE -- One compiled regex with metadata
 // =============================================================================
 struct DetectionRule {
     std::string name;
@@ -98,16 +98,26 @@ public:
             }
             if (line.empty()) continue;
 
+            // ReDoS mitigation: truncate very long lines before regex evaluation.
+            // std::regex has no built-in timeout; pathological backtracking on a
+            // multi-kilobyte line can lock a thread for minutes. 4KB is well
+            // above any normal log line.
+            if (line.size() > 4096) line.resize(4096);
+
             for (const auto& rule : rules_) {
-                if (std::regex_search(line, rule.pattern)) {
-                    SecurityEvent ev;
-                    ev.rule_name    = rule.name;
-                    ev.severity     = rule.severity;
-                    ev.category     = rule.category;
-                    // Truncate matched text to 512 chars
-                    ev.matched_text = line.substr(0, 512);
-                    events.push_back(std::move(ev));
-                    // Don't break — a line can match multiple rules
+                try {
+                    if (std::regex_search(line, rule.pattern)) {
+                        SecurityEvent ev;
+                        ev.rule_name    = rule.name;
+                        ev.severity     = rule.severity;
+                        ev.category     = rule.category;
+                        // Truncate matched text to 512 chars
+                        ev.matched_text = line.substr(0, 512);
+                        events.push_back(std::move(ev));
+                        // Don't break -- a line can match multiple rules
+                    }
+                } catch (const std::regex_error&) {
+                    // Malformed pattern or stack exhaustion from bad regex -- skip
                 }
             }
         }
@@ -147,7 +157,7 @@ private:
     size_t user_rules_loaded_ = 0;
 
     // =========================================================================
-    // BUILT-IN RULES — Ship with the binary, always active
+    // BUILT-IN RULES -- Ship with the binary, always active
     // =========================================================================
     void load_builtin_rules() {
         // ----- Authentication Failures -----
@@ -241,7 +251,7 @@ private:
     size_t load_rules_file(const std::string& path) {
         std::ifstream file(path);
         if (!file.is_open()) {
-            // Not an error — rules file is optional
+            // Not an error -- rules file is optional
             return 0;
         }
 
@@ -249,8 +259,26 @@ private:
         std::string line;
         int line_num = 0;
 
+        // Safety caps to protect against malformed or oversized rules.conf.
+        // rules.conf is admin-controlled so an attack path is less likely
+        // than with threat intel feeds, but defense in depth is cheap.
+        const size_t MAX_RULES       = 10000;
+        const size_t MAX_LINE_LEN    = 8192;
+        const size_t MAX_FIELD_LEN   = 4096;
+        const size_t MAX_PATTERN_LEN = 4096;  // std::regex compilation cost grows with pattern size
+
         while (std::getline(file, line)) {
             line_num++;
+            if (loaded >= MAX_RULES) {
+                std::cerr << "[RegexEngine] rules.conf: cap of "
+                          << MAX_RULES << " rules reached; remaining lines ignored.\n";
+                break;
+            }
+            if (line.size() > MAX_LINE_LEN) {
+                std::cerr << "[RegexEngine] rules.conf:" << line_num
+                          << " -- line exceeds " << MAX_LINE_LEN << " bytes. Skipping.\n";
+                continue;
+            }
 
             // Trim
             while (!line.empty() && (line.back() == '\r' || line.back() == '\n' ||
@@ -269,6 +297,7 @@ private:
             std::istringstream ss(line);
             std::string field;
             while (std::getline(ss, field, '|')) {
+                if (field.size() > MAX_FIELD_LEN) field.resize(MAX_FIELD_LEN);
                 // Trim each field
                 size_t fs = field.find_first_not_of(" \t");
                 size_t fe = field.find_last_not_of(" \t");
@@ -277,11 +306,12 @@ private:
                 } else {
                     fields.push_back("");
                 }
+                if (fields.size() > 16) break;  // Sanity cap on column count
             }
 
             if (fields.size() < 4) {
                 std::cerr << "[RegexEngine] rules.conf:" << line_num
-                          << " — expected 4 pipe-delimited fields, got "
+                          << " -- expected 4 pipe-delimited fields, got "
                           << fields.size() << ". Skipping.\n";
                 continue;
             }
@@ -291,11 +321,23 @@ private:
             const std::string& category = fields[2];
             const std::string& pattern  = fields[3];
 
+            if (name.empty() || pattern.empty()) {
+                std::cerr << "[RegexEngine] rules.conf:" << line_num
+                          << " -- empty name or pattern. Skipping.\n";
+                continue;
+            }
+            if (pattern.size() > MAX_PATTERN_LEN) {
+                std::cerr << "[RegexEngine] rules.conf:" << line_num
+                          << " -- pattern exceeds " << MAX_PATTERN_LEN
+                          << " bytes (ReDoS risk). Skipping.\n";
+                continue;
+            }
+
             // Validate severity
             if (severity != "low" && severity != "medium" &&
                 severity != "high" && severity != "critical") {
                 std::cerr << "[RegexEngine] rules.conf:" << line_num
-                          << " — invalid severity '" << severity
+                          << " -- invalid severity '" << severity
                           << "'. Use: low|medium|high|critical. Skipping.\n";
                 continue;
             }
