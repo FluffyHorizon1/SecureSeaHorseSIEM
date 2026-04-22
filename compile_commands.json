@@ -1,0 +1,14 @@
+[
+{
+  "directory": "/workspaces/SecureSeaHorseSIEM/build",
+  "command": "/usr/bin/c++  -I/workspaces/SecureSeaHorseSIEM/src/server -I/usr/include/postgresql -std=c++17 -Wall -Wextra -o CMakeFiles/SeaHorseServer.dir/src/server/server.cpp.o -c /workspaces/SecureSeaHorseSIEM/src/server/server.cpp",
+  "file": "/workspaces/SecureSeaHorseSIEM/src/server/server.cpp",
+  "output": "CMakeFiles/SeaHorseServer.dir/src/server/server.cpp.o"
+},
+{
+  "directory": "/workspaces/SecureSeaHorseSIEM/build",
+  "command": "/usr/bin/c++  -I/workspaces/SecureSeaHorseSIEM/src/client -std=c++17 -Wall -Wextra -o CMakeFiles/SeaHorseClient.dir/src/client/client.cpp.o -c /workspaces/SecureSeaHorseSIEM/src/client/client.cpp",
+  "file": "/workspaces/SecureSeaHorseSIEM/src/client/client.cpp",
+  "output": "CMakeFiles/SeaHorseClient.dir/src/client/client.cpp.o"
+}
+]
