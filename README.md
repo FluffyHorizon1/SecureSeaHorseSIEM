@@ -1,4 +1,4 @@
-# 🐴 SecureSeaHorse v3.1.1: Complete SIEM Platform
+# 🐴 SecureSeaHorse v3.1.2: Complete SIEM Platform
 
 **Release Date:** April 22, 2026
 **Status:** Hardening & Security Audit Release (Phase 15)
