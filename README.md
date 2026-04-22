@@ -1,4 +1,4 @@
-# 🐴 SecureSeaHorse v3.1.2: Complete SIEM Platform
+# 🐴 SecureSeaHorse v3.1.4: Complete SIEM Platform
 
 **Release Date:** April 22, 2026
 **Status:** Hardening & Security Audit Release (Phase 15)
@@ -550,7 +550,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/correlations
 | 2.4.0 | 14 | Software inventory, dpkg/rpm/registry, change detection |
 | 2.5.0 | 15 | Correlation engine, 7 kill-chain rules, cross-device linking |
 | 3.0.0 | 15 | Split `src/server` + `src/client`, installers, user manual |
-| **3.1.1** | — | **Security audit: 5 critical fixes, 12 DoS-hardening controls** |
+| **3.1.4** | — | **Security audit: 5 critical fixes, 12 DoS-hardening controls** |
 
 ---
 
