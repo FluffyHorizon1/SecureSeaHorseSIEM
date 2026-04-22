@@ -6,7 +6,7 @@
 #endif
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 6: Server-Side FIM Monitor
+// SecureSeaHorse SIEM -- Phase 6: Server-Side FIM Monitor
 // =============================================================================
 // Provides:
 //   - Per-device baseline storage for file hashes
@@ -29,18 +29,18 @@
 #include "fim_scanner.h"   // For FimScanner::diff()
 
 // =============================================================================
-// FIM ALERT — Detection output
+// FIM ALERT -- Detection output
 // =============================================================================
 struct FimAlert {
-    int32_t     device_id;
-    int64_t     timestamp_ms;
+    int32_t     device_id    = 0;
+    int64_t     timestamp_ms = 0;
     std::string machine_ip;
-    FimChangeType change_type;
+    FimChangeType change_type = FimChangeType::FIM_ADDED;
     std::string path;
     std::string old_hash;
     std::string new_hash;
-    uint64_t    old_size;
-    uint64_t    new_size;
+    uint64_t    old_size     = 0;
+    uint64_t    new_size     = 0;
     std::string severity;       // "low", "medium", "high", "critical"
     std::string mitre_id;
     std::string mitre_tactic;
@@ -53,10 +53,10 @@ struct FimAlert {
 struct FimMonitorConfig {
     bool enabled = true;
 
-    // Critical paths — changes to these are always "critical" severity
+    // Critical paths -- changes to these are always "critical" severity
     std::vector<std::string> critical_paths;
 
-    // High-priority paths — "high" severity
+    // High-priority paths -- "high" severity
     std::vector<std::string> high_paths;
 
     // Default severity for changes not matching critical/high paths
@@ -91,7 +91,7 @@ public:
         std::lock_guard<std::mutex> dev_lock(device.mutex);
 
         if (!device.has_baseline) {
-            // First report — establish baseline, no alerts
+            // First report -- establish baseline, no alerts
             device.entries = report.entries;
             device.has_baseline = true;
             device.last_scan_ms = report.timestamp_ms;

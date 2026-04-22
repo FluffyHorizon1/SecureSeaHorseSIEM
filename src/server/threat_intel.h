@@ -6,7 +6,7 @@
 #endif
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 5: Threat Intelligence Feed Engine
+// SecureSeaHorse SIEM -- Phase 5: Threat Intelligence Feed Engine
 // =============================================================================
 // Provides:
 //   - Indicator of Compromise (IoC) matching: IPs, domains, hashes, user agents
@@ -46,7 +46,7 @@ enum class IoCType {
     IoC_UA,     // HTTP user-agent string
     IoC_URL,            // Full URL pattern
     IoC_EMAIL,          // Email address
-    IoC_CIDR,           // IP range (e.g. 10.0.0.0/8) — matched via prefix
+    IoC_CIDR,           // IP range (e.g. 10.0.0.0/8) -- matched via prefix
 };
 
 inline std::string ioc_type_str(IoCType t) {
@@ -76,22 +76,22 @@ inline IoCType parse_ioc_type(const std::string& s) {
 }
 
 // =============================================================================
-// IoC ENTRY — Single indicator record
+// IoC ENTRY -- Single indicator record
 // =============================================================================
 struct IoCEntry {
-    IoCType     type;
+    IoCType     type = IoCType::IoC_IP;
     std::string value;          // The indicator itself (normalized to lowercase)
     std::string severity;       // "low", "medium", "high", "critical"
     std::string feed_source;    // Name of the feed file it came from
     std::string description;    // Human-readable description
     std::string mitre_id;       // MITRE ATT&CK technique ID (optional)
     std::string tags;           // Comma-separated tags (e.g. "apt,ransomware")
-    int64_t     first_seen;     // Unix timestamp when added to feed (0 = unknown)
-    int64_t     last_seen;      // Unix timestamp of last activity (0 = unknown)
+    int64_t     first_seen = 0; // Unix timestamp when added to feed (0 = unknown)
+    int64_t     last_seen = 0;  // Unix timestamp of last activity (0 = unknown)
 };
 
 // =============================================================================
-// IoC MATCH — Result from the matcher
+// IoC MATCH -- Result from the matcher
 // =============================================================================
 struct IoCMatch {
     IoCEntry    ioc;            // The matched indicator
@@ -100,7 +100,7 @@ struct IoCMatch {
 };
 
 // =============================================================================
-// CIDR HELPER — Check if an IP falls within a CIDR range
+// CIDR HELPER -- Check if an IP falls within a CIDR range
 // =============================================================================
 inline uint32_t ip_to_uint32(const std::string& ip) {
     uint32_t result = 0;
@@ -115,8 +115,8 @@ inline uint32_t ip_to_uint32(const std::string& ip) {
 }
 
 struct CidrRange {
-    uint32_t    network;
-    uint32_t    mask;
+    uint32_t    network = 0;
+    uint32_t    mask = 0;
     IoCEntry    entry;
 };
 
@@ -136,16 +136,23 @@ inline CidrRange parse_cidr(const std::string& cidr_str, const IoCEntry& entry) 
         range.mask = 0xFFFFFFFF;  // /32
     } else {
         range.network = ip_to_uint32(cidr_str.substr(0, slash));
-        int prefix_len = std::stoi(cidr_str.substr(slash + 1));
+        int prefix_len = 32;  // Safe default if parse fails
+        try {
+            prefix_len = std::stoi(cidr_str.substr(slash + 1));
+        } catch (...) {
+            prefix_len = 32;
+        }
         if (prefix_len >= 0 && prefix_len <= 32) {
             range.mask = (prefix_len == 0) ? 0 : (~0u << (32 - prefix_len));
+        } else {
+            range.mask = 0xFFFFFFFF;
         }
     }
     return range;
 }
 
 // =============================================================================
-// FEED FILE TRACKER — Monitors file modification time for auto-reload
+// FEED FILE TRACKER -- Monitors file modification time for auto-reload
 // =============================================================================
 struct FeedFile {
     std::string path;
@@ -155,7 +162,7 @@ struct FeedFile {
 };
 
 // =============================================================================
-// IoC STORE — Thread-safe indicator database with O(1) lookups
+// IoC STORE -- Thread-safe indicator database with O(1) lookups
 // =============================================================================
 class IoCStore {
 public:
@@ -175,12 +182,24 @@ public:
         size_t loaded = 0;
         std::string line;
 
+        // Safety caps to prevent memory exhaustion from malformed or
+        // malicious feed files.
+        const size_t MAX_ENTRIES_PER_FEED = 5'000'000;
+        const size_t MAX_LINE_LEN = 8192;
+        const size_t MAX_FIELD_LEN = 2048;
+
         while (std::getline(file, line)) {
+            if (loaded >= MAX_ENTRIES_PER_FEED) break;
+            if (line.size() > MAX_LINE_LEN) continue;  // Skip absurdly long lines
+
             // Strip comments and whitespace
             size_t comment = line.find('#');
             if (comment != std::string::npos) line = line.substr(0, comment);
-            line.erase(0, line.find_first_not_of(" \t\r\n"));
-            line.erase(line.find_last_not_of(" \t\r\n") + 1);
+            size_t start = line.find_first_not_of(" \t\r\n");
+            if (start == std::string::npos) continue;
+            line.erase(0, start);
+            size_t end = line.find_last_not_of(" \t\r\n");
+            if (end != std::string::npos) line.resize(end + 1);
             if (line.empty()) continue;
 
             // Parse pipe-delimited fields
@@ -188,12 +207,18 @@ public:
             std::istringstream iss(line);
             std::string field;
             while (std::getline(iss, field, '|')) {
-                field.erase(0, field.find_first_not_of(" \t"));
-                field.erase(field.find_last_not_of(" \t") + 1);
+                if (field.size() > MAX_FIELD_LEN) field.resize(MAX_FIELD_LEN);
+                size_t fs = field.find_first_not_of(" \t");
+                if (fs != std::string::npos) field.erase(0, fs);
+                size_t fe = field.find_last_not_of(" \t");
+                if (fe != std::string::npos) field.resize(fe + 1);
+                else if (fs == std::string::npos) field.clear();
                 fields.push_back(field);
+                if (fields.size() > 16) break;  // Sanity cap on column count
             }
 
             if (fields.size() < 2) continue;  // Need at least type + value
+            if (fields[1].empty()) continue;  // Empty indicator value
 
             IoCEntry entry;
             entry.type        = parse_ioc_type(fields[0]);
@@ -255,7 +280,7 @@ public:
         auto it = ip_map_.find(lower);
         if (it != ip_map_.end()) { out = it->second; return true; }
 
-        // Check CIDR ranges (linear scan — typically small)
+        // Check CIDR ranges (linear scan -- typically small)
         uint32_t ip_num = ip_to_uint32(lower);
         if (ip_num != 0) {
             for (const auto& cidr : cidr_ranges_) {
@@ -356,7 +381,7 @@ private:
 };
 
 // =============================================================================
-// THREAT INTEL ENGINE — Feed management + real-time matching
+// THREAT INTEL ENGINE -- Feed management + real-time matching
 // =============================================================================
 class ThreatIntelEngine {
 public:
@@ -366,7 +391,7 @@ public:
         int         reload_interval_s = 300;        // Check for feed updates every N seconds
     };
 
-    explicit ThreatIntelEngine(const Config& cfg = {})
+    explicit ThreatIntelEngine(const Config& cfg)
         : config_(cfg), last_reload_(std::chrono::steady_clock::now())
     {
         if (config_.enabled) {
@@ -464,7 +489,7 @@ public:
                     break;
                 }
             } catch (...) {
-                // File may have been deleted — trigger reload to clean up
+                // File may have been deleted -- trigger reload to clean up
                 needs_reload = true;
                 break;
             }
@@ -543,7 +568,7 @@ private:
                     R"(\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b)",
                     std::regex_constants::optimize);
 
-                // Domain names (simplified — captures FQDNs)
+                // Domain names (simplified -- captures FQDNs)
                 e.domain_pattern = std::regex(
                     R"(\b([a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,})\b)",
                     std::regex_constants::optimize);
@@ -683,7 +708,7 @@ private:
                 new_files.push_back(ff);
             }
         } catch (...) {
-            // Directory scan failed — keep existing store
+            // Directory scan failed -- keep existing store
             return;
         }
 

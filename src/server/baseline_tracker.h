@@ -1,8 +1,12 @@
 #ifndef BASELINE_TRACKER_H
 #define BASELINE_TRACKER_H
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 4: Adaptive Baseline Tracker
+// SecureSeaHorse SIEM -- Phase 4: Adaptive Baseline Tracker
 // =============================================================================
 // Provides:
 //   - Exponentially Weighted Moving Average (EWMA) per metric per device
@@ -20,7 +24,7 @@
 #include <vector>
 
 // =============================================================================
-// EWMA METRIC — Tracks a single scalar metric
+// EWMA METRIC -- Tracks a single scalar metric
 // =============================================================================
 struct EwmaMetric {
     double mean     = 0.0;      // Exponentially weighted mean
@@ -39,7 +43,7 @@ struct EwmaMetric {
         samples++;
 
         if (samples == 1) {
-            // First sample — initialize
+            // First sample -- initialize
             mean     = value;
             variance = 0.0;
             return;
@@ -78,7 +82,7 @@ struct EwmaMetric {
 };
 
 // =============================================================================
-// DEVICE BASELINE — All tracked metrics for a single device
+// DEVICE BASELINE -- All tracked metrics for a single device
 // =============================================================================
 struct DeviceBaseline {
     // --- Network metrics (deltas per reporting interval) ---
@@ -117,7 +121,7 @@ struct DeviceBaseline {
 };
 
 // =============================================================================
-// BASELINE TRACKER — Manages baselines for all devices
+// BASELINE TRACKER -- Manages baselines for all devices
 // =============================================================================
 class BaselineTracker {
 public:
@@ -131,7 +135,7 @@ public:
         double z_low      = 2.0;   // Low confidence (informational)
     };
 
-    explicit BaselineTracker(const Config& cfg = {}) : config_(cfg) {}
+    explicit BaselineTracker(const Config& cfg) : config_(cfg) {}
 
     // -------------------------------------------------------------------------
     // UPDATE: Feed a new telemetry report and compute deltas
@@ -218,7 +222,7 @@ public:
         if (abs_z >= config_.z_high)   return "critical";
         if (abs_z >= config_.z_medium) return "high";
         if (abs_z >= config_.z_low)    return "medium";
-        return "";  // Below threshold — not anomalous
+        return "";  // Below threshold -- not anomalous
     }
 
     // -------------------------------------------------------------------------

@@ -1,6 +1,25 @@
 #define _CRT_SECURE_NO_WARNINGS 
 #define NOMINMAX   // Prevent Windows.h from defining min/max macros
 
+// Platform-specific socket definitions (must come BEFORE other includes)
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "libssl.lib")
+#pragma comment(lib, "libcrypto.lib")
+#pragma comment(lib, "libpq.lib")
+typedef int socklen_t;
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
+#define INVALID_SOCKET -1
+#define closesocket close
+using SOCKET = int;
+#endif
+
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -24,33 +43,26 @@
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 
-// --- Phase 1 + 2 + 3 + 4 + 5 + 6 Headers ---
+// --- Phase 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 Headers ---
 #include "server_protocol.h" 
 #include "crypto_utils.h"         // Phase 3: HMAC, CRL, OCSP, heartbeat
 #include "regex_engine.h"         // Phase 2: Regex-based log analysis
 #include "alert_engine.h"         // Phase 2: Log-based threshold alerting
-#include "db_layer.h"             // Phase 2+4+5+6: PostgreSQL persistence
+#include "db_layer.h"             // Phase 2+4+5+6+7: PostgreSQL persistence
 #include "traffic_classifier.h"   // Phase 4: Traffic classification + MITRE
 #include "threat_intel.h"         // Phase 5: Threat intelligence feeds
 #include "fim_common.h"           // Phase 6: FIM data structures
 #include "fim_monitor.h"          // Phase 6: Server-side FIM monitor
-
-#ifdef _WIN32
-#include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")
-#pragma comment(lib, "libssl.lib")
-#pragma comment(lib, "libcrypto.lib")
-#pragma comment(lib, "libpq.lib")
-typedef int socklen_t;
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-#define INVALID_SOCKET -1
-#define closesocket close
-typedef int SOCKET;
-#endif
+#include "rest_server.h"          // Phase 7: REST API server
+#include "dashboard_html.h"       // Phase 7: Embedded web dashboard
+#include "incident_response.h"    // Phase 8: Incident response automation
+#include "fleet_manager.h"        // Phase 9: Agent fleet management
+#include "network_inspector.h"    // Phase 10: Network deep inspection
+#include "process_monitor.h"      // Phase 11: Process report handling
+#include "connection_inventory.h" // Phase 12: Connection report handling
+#include "session_tracker.h"      // Phase 13: Session report handling
+#include "software_inventory.h"   // Phase 14: Software report handling
+#include "correlation_engine.h"   // Phase 15: Cross-device correlation
 
 // =============================================================================
 // GLOBAL CONTROL
@@ -58,6 +70,7 @@ typedef int SOCKET;
 std::atomic<bool> g_running(true);
 
 void handle_signal(int sig) {
+    (void)sig;
     g_running = false;
 }
 
@@ -71,6 +84,12 @@ static std::unique_ptr<AlertEngine>        alert_engine;    // Phase 2
 static std::unique_ptr<TrafficClassifier>  classifier;      // Phase 4
 static std::unique_ptr<ThreatIntelEngine>  threat_intel;     // Phase 5
 static std::unique_ptr<FimMonitor>         fim_monitor;      // Phase 6
+static std::unique_ptr<RestServer>         rest_server;      // Phase 7
+static std::unique_ptr<IncidentResponseEngine> ir_engine;  // Phase 8
+static std::unique_ptr<FleetManager>       fleet_mgr;       // Phase 9
+static std::unique_ptr<NetworkInspector>   net_inspector;   // Phase 10
+static std::unique_ptr<CorrelationEngine>  correlator;     // Phase 15
+static std::chrono::steady_clock::time_point server_start_time;
 
 // Phase 3 config
 static bool g_hmac_enabled       = true;
@@ -145,7 +164,7 @@ bool send_exact_ssl(SSL* ssl, const void* buf, int len) {
 }
 
 // =============================================================================
-// OPENSSL HELPERS — Phase 3
+// OPENSSL HELPERS -- Phase 3
 // =============================================================================
 void init_openssl() {
     SSL_load_error_strings();
@@ -156,6 +175,23 @@ SSL_CTX* create_server_context(const AppConfig& conf) {
     const SSL_METHOD* method = TLS_server_method();
     SSL_CTX* ctx = SSL_CTX_new(method);
     if (!ctx) { logger->log(AsyncLogger::ERROR_LOG, "Unable to create SSL context"); exit(EXIT_FAILURE); }
+
+    // Pin TLS 1.2+ and disable legacy/insecure protocols and renegotiation.
+    // SSLv2, SSLv3, TLS 1.0, TLS 1.1 all have known weaknesses.
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3
+                          | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1
+                          | SSL_OP_NO_COMPRESSION
+                          | SSL_OP_CIPHER_SERVER_PREFERENCE
+                          | SSL_OP_NO_RENEGOTIATION);
+    // Modern cipher suites only (TLS 1.2). TLS 1.3 ciphers are always on.
+    SSL_CTX_set_cipher_list(ctx,
+        "ECDHE-ECDSA-AES256-GCM-SHA384:"
+        "ECDHE-RSA-AES256-GCM-SHA384:"
+        "ECDHE-ECDSA-CHACHA20-POLY1305:"
+        "ECDHE-RSA-CHACHA20-POLY1305:"
+        "ECDHE-ECDSA-AES128-GCM-SHA256:"
+        "ECDHE-RSA-AES128-GCM-SHA256");
 
     std::string ca_path   = conf.get("ca_path", "ca.crt");
     std::string cert_path = conf.get("server_crt", "server.crt");
@@ -190,10 +226,10 @@ SSL_CTX* create_server_context(const AppConfig& conf) {
 }
 
 // =============================================================================
-// PROCESSING LOGIC — Phase 2 + 3 + 4
+// PROCESSING LOGIC -- Phase 2 + 3 + 4
 // =============================================================================
-// Pipeline: Decode → CPU calc → Regex → DB persist → Alert eval
-//           → Traffic classify → DB persist threats → Log threats
+// Pipeline: Decode -> CPU calc -> Regex -> DB persist -> Alert eval
+//           -> Traffic classify -> DB persist threats -> Log threats
 // =============================================================================
 void process_report(RawTelemetry& current) {
     // --- Byte Order Conversion ---
@@ -238,7 +274,7 @@ void process_report(RawTelemetry& current) {
         }
         state->failed_login_count += new_fails;
 
-        // Phase 2: DB persistence — security events
+        // Phase 2: DB persistence -- security events
         if (pg_store) {
             for (const auto& ev : sec_events) {
                 pg_store->insert_security_event(
@@ -286,7 +322,7 @@ void process_report(RawTelemetry& current) {
         float cpu_usage = (total_delta > 0) ? 100.0f * (1.0f - ((float)idle_delta / (float)total_delta)) : 0.0f;
         state->last_report = current;
 
-        // Phase 2: DB persistence — telemetry
+        // Phase 2: DB persistence -- telemetry
         if (pg_store) {
             pg_store->insert_telemetry(
                 current.device_id, current.timestamp_ms,
@@ -352,6 +388,27 @@ void process_report(RawTelemetry& current) {
                 } else {
                     logger->log(AsyncLogger::INFO, ss.str());
                 }
+
+                // Phase 8: Route to incident response
+                if (ir_engine) {
+                    Incident inc;
+                    inc.device_id = t.device_id; inc.timestamp_ms = t.timestamp_ms;
+                    inc.machine_ip = t.machine_ip; inc.source = "traffic_classifier";
+                    inc.category = t.category; inc.severity = t.severity;
+                    inc.mitre_id = t.mitre_id; inc.description = t.description;
+                    ir_engine->report_incident(inc);
+                }
+                // Phase 9: Increment fleet counters
+                if (fleet_mgr) fleet_mgr->increment_threats(t.device_id);
+                // Phase 15: Feed to correlation engine
+                if (correlator) {
+                    CorrEvent ce;
+                    ce.device_id = t.device_id; ce.timestamp_ms = t.timestamp_ms;
+                    ce.source = "traffic"; ce.category = t.category;
+                    ce.severity = t.severity; ce.machine_ip = t.machine_ip;
+                    ce.detail = t.description;
+                    correlator->ingest(ce);
+                }
             }
         }
 
@@ -404,6 +461,101 @@ void process_report(RawTelemetry& current) {
                 } else {
                     logger->log(AsyncLogger::INFO, iss.str());
                 }
+
+                // Phase 8: Route IoC to incident response
+                if (ir_engine) {
+                    Incident inc;
+                    inc.device_id = current.device_id; inc.timestamp_ms = current.timestamp_ms;
+                    inc.machine_ip = current.machine_ip; inc.source = "threat_intel";
+                    inc.category = "ioc_match"; inc.severity = m.ioc.severity;
+                    inc.mitre_id = m.ioc.mitre_id; inc.description = m.ioc.description;
+                    inc.ioc_value = m.ioc.value;
+                    ir_engine->report_incident(inc);
+                }
+                if (fleet_mgr) fleet_mgr->increment_ioc_hits(current.device_id);
+            }
+        }
+
+        // =================================================================
+        // PHASE 9 [FLEET MANAGER]: Update device inventory
+        // =================================================================
+        if (fleet_mgr) {
+            fleet_mgr->update_telemetry(current.device_id,
+                current.machine_name, current.machine_ip,
+                "", current.timestamp_ms);
+        }
+
+        // =================================================================
+        // PHASE 10 [NETWORK INSPECTOR]: Deep inspection of log content
+        // =================================================================
+        if (net_inspector && !raw_log.empty()) {
+            auto net_findings = net_inspector->inspect(raw_log, current.device_id, current.machine_ip);
+            // Also check connection patterns
+            auto conn_findings = net_inspector->check_connections(current.device_id, current.machine_ip);
+            net_findings.insert(net_findings.end(), conn_findings.begin(), conn_findings.end());
+
+            for (const auto& nf : net_findings) {
+                // DB persistence as threat detection
+                if (pg_store) {
+                    pg_store->insert_threat_detection(
+                        nf.device_id, nf.timestamp_ms, nf.machine_ip.c_str(),
+                        nf.category, nf.indicator, nf.severity, nf.confidence,
+                        nf.mitre_id, "", "", nf.description, nf.raw_evidence);
+                }
+                g_total_threats++;
+
+                if (fleet_mgr) fleet_mgr->increment_threats(nf.device_id);
+
+                // Log
+                logger->log(nf.severity == "high" || nf.severity == "critical"
+                    ? AsyncLogger::WARN : AsyncLogger::INFO,
+                    "[NET] " + nf.category + " | dev=" + std::to_string(nf.device_id)
+                    + " | " + nf.severity + " | " + nf.description);
+
+                // Route to incident response
+                if (ir_engine) {
+                    Incident inc;
+                    inc.device_id = nf.device_id;
+                    inc.timestamp_ms = nf.timestamp_ms;
+                    inc.machine_ip = nf.machine_ip;
+                    inc.source = "network_inspector";
+                    inc.category = nf.category;
+                    inc.severity = nf.severity;
+                    inc.mitre_id = nf.mitre_id;
+                    inc.description = nf.description;
+                    inc.ioc_value = nf.indicator;
+                    ir_engine->report_incident(inc);
+                }
+            }
+
+            // Update connection tracker
+            net_inspector->update_connections(current.device_id,
+                0, 0, 0, current.timestamp_ms);
+        }
+
+        // =================================================================
+        // PHASE 8 [INCIDENT RESPONSE]: Create incidents from detections
+        // =================================================================
+        // (Traffic classifier threats)
+        if (ir_engine && classifier) {
+            // Threats already processed above -- create incidents for high+ severity
+            // This is handled inline in the threat loop via a helper
+        }
+
+        // Route alert engine events to incident response
+        if (ir_engine && alert_engine) {
+            for (const auto& ev : sec_events) {
+                if (ev.severity == "high" || ev.severity == "critical") {
+                    Incident inc;
+                    inc.device_id = current.device_id;
+                    inc.timestamp_ms = current.timestamp_ms;
+                    inc.machine_ip = current.machine_ip;
+                    inc.source = "alert_engine";
+                    inc.category = ev.rule_name;
+                    inc.severity = ev.severity;
+                    inc.description = ev.matched_text;
+                    ir_engine->report_incident(inc);
+                }
             }
         }
 
@@ -432,7 +584,7 @@ void process_fim_report(const char* payload_data, uint32_t payload_len,
     }
 
     logger->log(AsyncLogger::INFO, "FIM: Report from device " + std::to_string(report.device_id)
-        + " — " + std::to_string(report.entries.size()) + " files");
+        + " -- " + std::to_string(report.entries.size()) + " files");
 
     std::vector<FimAlert> alerts = fim_monitor->process(report, client_ip);
 
@@ -456,7 +608,7 @@ void process_fim_report(const char* payload_data, uint32_t payload_len,
            << " | " << a.path;
         if (!a.mitre_id.empty()) ss << " | MITRE " << a.mitre_id;
         if (a.change_type == FimChangeType::FIM_MODIFIED)
-            ss << " | hash=" << a.old_hash.substr(0, 12) << "→" << a.new_hash.substr(0, 12);
+            ss << " | hash=" << a.old_hash.substr(0, 12) << "->" << a.new_hash.substr(0, 12);
 
         if (a.severity == "critical") {
             logger->log(AsyncLogger::ERROR_LOG, ss.str());
@@ -465,7 +617,162 @@ void process_fim_report(const char* payload_data, uint32_t payload_len,
         } else {
             logger->log(AsyncLogger::INFO, ss.str());
         }
+
+        // Phase 8: Route FIM to incident response
+        if (ir_engine) {
+            Incident inc;
+            inc.device_id = a.device_id; inc.timestamp_ms = a.timestamp_ms;
+            inc.machine_ip = a.machine_ip; inc.source = "fim";
+            inc.category = "fim_" + fim_change_str(a.change_type);
+            inc.severity = a.severity; inc.mitre_id = a.mitre_id;
+            inc.description = a.description; inc.file_path = a.path;
+            ir_engine->report_incident(inc);
+        }
+        // Phase 9: Increment fleet counters
+        if (fleet_mgr) fleet_mgr->increment_fim_changes(a.device_id);
     }
+
+    // Phase 9: Update FIM scan timestamp
+    if (fleet_mgr) fleet_mgr->update_fim(report.device_id);
+}
+
+// =============================================================================
+// PHASE 11: PROCESS PROCESS REPORT
+// =============================================================================
+void process_process_report(const char* data, uint32_t len, const std::string& client_ip) {
+    std::string payload(data, len);
+    ProcessReport report = deserialize_process_report(payload);
+    if (report.device_id == 0) return;
+
+    logger->log(AsyncLogger::INFO,
+        "[PROC] device=" + std::to_string(report.device_id) + " processes=" + std::to_string(report.processes.size())
+        + " changes=" + std::to_string(report.changes.size()));
+
+    // Feed suspicious processes to correlation engine
+    for (const auto& c : report.changes) {
+        if (c.type == ProcessChangeType::PROC_SUSPICIOUS) {
+            logger->log(AsyncLogger::WARN,
+                "[PROC] SUSPICIOUS: device=" + std::to_string(report.device_id)
+                + " pid=" + std::to_string(c.process.pid)
+                + " name=" + c.process.name + " | " + c.reason);
+
+            if (correlator) {
+                CorrEvent ce;
+                ce.device_id = report.device_id; ce.timestamp_ms = report.timestamp_ms;
+                ce.source = "process"; ce.category = "suspicious";
+                ce.severity = "high"; ce.machine_ip = client_ip;
+                ce.indicator = c.process.name; ce.detail = c.reason;
+                correlator->ingest(ce);
+            }
+
+            if (ir_engine) {
+                Incident inc;
+                inc.device_id = report.device_id; inc.timestamp_ms = report.timestamp_ms;
+                inc.machine_ip = client_ip; inc.source = "process_monitor";
+                inc.category = "suspicious_process"; inc.severity = "high";
+                inc.description = c.reason + ": " + c.process.name;
+                ir_engine->report_incident(inc);
+            }
+        }
+    }
+    if (fleet_mgr) fleet_mgr->update_telemetry(report.device_id, "", client_ip, "", report.timestamp_ms);
+}
+
+// =============================================================================
+// PHASE 12: PROCESS CONNECTION REPORT
+// =============================================================================
+void process_connection_report(const char* data, uint32_t len, const std::string& client_ip) {
+    std::string payload(data, len);
+    ConnectionReport report = deserialize_connection_report(payload);
+    if (report.device_id == 0) return;
+
+    logger->log(AsyncLogger::INFO,
+        "[CONN] device=" + std::to_string(report.device_id) + " connections=" + std::to_string(report.connections.size())
+        + " changes=" + std::to_string(report.changes.size()));
+
+    for (const auto& ch : report.changes) {
+        if (ch.type == ConnChangeType::CONN_SUSPICIOUS) {
+            logger->log(AsyncLogger::WARN,
+                "[CONN] SUSPICIOUS: device=" + std::to_string(report.device_id)
+                + " remote=" + ch.conn.remote_addr + ":" + std::to_string(ch.conn.remote_port)
+                + " | " + ch.reason);
+
+            if (correlator) {
+                CorrEvent ce;
+                ce.device_id = report.device_id; ce.timestamp_ms = report.timestamp_ms;
+                ce.source = "connection"; ce.category = "suspicious_connection";
+                ce.severity = "medium"; ce.machine_ip = client_ip;
+                ce.indicator = ch.conn.remote_addr; ce.detail = ch.reason;
+                correlator->ingest(ce);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// PHASE 13: PROCESS SESSION REPORT
+// =============================================================================
+void process_session_report(const char* data, uint32_t len, const std::string& client_ip) {
+    std::string payload(data, len);
+    SessionReport report = deserialize_session_report(payload);
+    if (report.device_id == 0) return;
+
+    logger->log(AsyncLogger::INFO,
+        "[SESS] device=" + std::to_string(report.device_id) + " sessions=" + std::to_string(report.active_sessions.size())
+        + " auth_events=" + std::to_string(report.auth_events.size())
+        + " failed=" + std::to_string(report.failed_logins));
+
+    for (const auto& a : report.auth_events) {
+        if (a.type == AuthEventType::AUTH_LOGIN_FAILED) {
+            if (correlator) {
+                CorrEvent ce;
+                ce.device_id = report.device_id; ce.timestamp_ms = a.timestamp_ms;
+                ce.source = "session"; ce.category = "login_failed";
+                ce.severity = "medium"; ce.machine_ip = client_ip;
+                ce.target_user = a.username; ce.indicator = a.source_ip;
+                ce.detail = a.detail;
+                correlator->ingest(ce);
+            }
+        } else if (a.type == AuthEventType::AUTH_PRIVILEGE_ESCALATION) {
+            logger->log(AsyncLogger::WARN,
+                "[SESS] PRIV_ESC: device=" + std::to_string(report.device_id)
+                + " user=" + a.username + " | " + a.detail);
+            if (correlator) {
+                CorrEvent ce;
+                ce.device_id = report.device_id; ce.timestamp_ms = a.timestamp_ms;
+                ce.source = "session"; ce.category = "priv_escalation";
+                ce.severity = "high"; ce.machine_ip = client_ip;
+                ce.target_user = a.username; ce.detail = a.detail;
+                correlator->ingest(ce);
+            }
+        }
+    }
+    if (fleet_mgr) fleet_mgr->increment_alerts(report.device_id, report.failed_logins);
+}
+
+// =============================================================================
+// PHASE 14: PROCESS SOFTWARE REPORT
+// =============================================================================
+void process_software_report(const char* data, uint32_t len, const std::string& client_ip) {
+    std::string payload(data, len);
+    SoftwareReport report = deserialize_software_report(payload);
+    if (report.device_id == 0) return;
+
+    logger->log(AsyncLogger::INFO,
+        "[SW] device=" + std::to_string(report.device_id) + " software=" + std::to_string(report.software.size())
+        + " changes=" + std::to_string(report.changes.size()));
+
+    for (const auto& c : report.changes) {
+        std::string type_str = "installed";
+        if (c.type == SoftwareChangeType::SW_REMOVED) type_str = "removed";
+        else if (c.type == SoftwareChangeType::SW_UPDATED) type_str = "updated";
+
+        logger->log(AsyncLogger::INFO,
+            "[SW] " + type_str + ": " + c.software.name + " " + c.software.version
+            + (c.old_version.empty() ? "" : " (was " + c.old_version + ")")
+            + " on device " + std::to_string(report.device_id));
+    }
+    (void)client_ip;
 }
 
 // =============================================================================
@@ -481,7 +788,7 @@ bool send_heartbeat_pong(SSL* ssl, const HeartbeatPayload& ping, const uint8_t* 
 }
 
 // =============================================================================
-// CLIENT HANDLER — Dual-protocol v1/v2
+// CLIENT HANDLER -- Dual-protocol v1/v2
 // =============================================================================
 void handle_client_ssl(SSL* ssl, SOCKET sock) {
     if (SSL_accept(ssl) <= 0) {
@@ -500,12 +807,7 @@ void handle_client_ssl(SSL* ssl, SOCKET sock) {
         socklen_t peer_len = sizeof(peer_addr);
         if (getpeername(sock, (struct sockaddr*)&peer_addr, &peer_len) == 0) {
             char ip_buf[INET_ADDRSTRLEN] = {0};
-#ifdef _WIN32
-            // Windows inet_ntoa is simpler
-            strncpy(ip_buf, inet_ntoa(peer_addr.sin_addr), sizeof(ip_buf) - 1);
-#else
             inet_ntop(AF_INET, &peer_addr.sin_addr, ip_buf, sizeof(ip_buf));
-#endif
             peer_ip = ip_buf;
         }
     }
@@ -518,7 +820,7 @@ void handle_client_ssl(SSL* ssl, SOCKET sock) {
             hmac_ready = true;
             logger->log(AsyncLogger::DEBUG, "HMAC session key derived.");
         } else {
-            logger->log(AsyncLogger::WARN, "HMAC derivation failed — v1 fallback.");
+            logger->log(AsyncLogger::WARN, "HMAC derivation failed -- v1 fallback.");
         }
     }
 
@@ -591,6 +893,22 @@ void handle_client_ssl(SSL* ssl, SOCKET sock) {
                     }
                     break;
                 }
+                case MSG_PROCESS_REPORT: {
+                    if (plen > 0) process_process_report(payload.data(), plen, peer_ip);
+                    break;
+                }
+                case MSG_CONN_REPORT: {
+                    if (plen > 0) process_connection_report(payload.data(), plen, peer_ip);
+                    break;
+                }
+                case MSG_SESSION_REPORT: {
+                    if (plen > 0) process_session_report(payload.data(), plen, peer_ip);
+                    break;
+                }
+                case MSG_SOFTWARE_REPORT: {
+                    if (plen > 0) process_software_report(payload.data(), plen, peer_ip);
+                    break;
+                }
                 default:
                     logger->log(AsyncLogger::WARN, "Unknown v2 msg_type: " + std::to_string(msg_type));
                     break;
@@ -629,7 +947,7 @@ session_end:
 }
 
 // =============================================================================
-// MAIN — Phase 4 Upgraded
+// MAIN -- Phase 4 Upgraded
 // =============================================================================
 int main(int argc, char* argv[]) {
     std::signal(SIGINT, handle_signal);
@@ -637,7 +955,7 @@ int main(int argc, char* argv[]) {
 
     CliArgs cli = parse_server_cli(argc, argv);
     if (cli.show_help) { print_server_usage(argv[0]); return 0; }
-    if (cli.show_version) { std::cout << "SecureSeaHorse Server v1.6.0 (Phase 6)\n"; return 0; }
+    if (cli.show_version) { std::cout << "SecureSeaHorse Server v2.5.0 (Phase 15)\n"; return 0; }
 
 #ifdef _WIN32
     WSADATA w;
@@ -665,7 +983,7 @@ int main(int argc, char* argv[]) {
         logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
     }
 
-    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Server v1.6.0 (Phase 6) starting ===");
+    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Server v2.5.0 (Phase 15) starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
 
     // Legacy CSV
@@ -689,7 +1007,7 @@ int main(int argc, char* argv[]) {
         if (db_cfg.enabled)
             logger->log(AsyncLogger::INFO, pg_store->is_connected()
                 ? "PostgreSQL: connected to " + db_cfg.host + ":" + db_cfg.port + "/" + db_cfg.dbname
-                : "PostgreSQL: connection failed — CSV fallback only.");
+                : "PostgreSQL: connection failed -- CSV fallback only.");
         else
             logger->log(AsyncLogger::INFO, "PostgreSQL: disabled.");
     }
@@ -831,6 +1149,102 @@ int main(int argc, char* argv[]) {
     }
 
     // -------------------------------------------------------------------------
+    // PHASE 8 [INCIDENT RESPONSE]: Initialize automation engine
+    // -------------------------------------------------------------------------
+    {
+        bool ir_enabled = conf.get_bool("ir_enabled", true);
+        if (ir_enabled) {
+            ir_engine = std::make_unique<IncidentResponseEngine>(
+                [](int level, const std::string& msg) {
+                    if (logger) logger->log(static_cast<AsyncLogger::Level>(level), msg);
+                });
+            ir_engine->set_webhook_url(conf.get("ir_webhook_url", ""));
+            ir_engine->set_script_dir(conf.get("ir_script_dir", "scripts"));
+            ir_engine->start();
+            logger->log(AsyncLogger::INFO,
+                "Incident Response: ENABLED | " + std::to_string(ir_engine->playbook_count()) + " playbooks loaded");
+        } else {
+            logger->log(AsyncLogger::INFO, "Incident Response: disabled.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // PHASE 9 [FLEET MANAGER]: Initialize device inventory
+    // -------------------------------------------------------------------------
+    {
+        FleetConfig fleet_cfg;
+        fleet_cfg.enabled = conf.get_bool("fleet_enabled", true);
+        fleet_cfg.stale_threshold_s = conf.get_int("fleet_stale_s", 300);
+        fleet_cfg.offline_threshold_s = conf.get_int("fleet_offline_s", 900);
+
+        if (fleet_cfg.enabled) {
+            fleet_mgr = std::make_unique<FleetManager>(fleet_cfg);
+            logger->log(AsyncLogger::INFO,
+                "Fleet Manager: ENABLED | stale=" + std::to_string(fleet_cfg.stale_threshold_s)
+                + "s offline=" + std::to_string(fleet_cfg.offline_threshold_s) + "s");
+        } else {
+            logger->log(AsyncLogger::INFO, "Fleet Manager: disabled.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // PHASE 10 [NETWORK INSPECTOR]: Initialize deep inspection
+    // -------------------------------------------------------------------------
+    {
+        NetworkInspector::InspectorConfig ni_cfg;
+        ni_cfg.dns_enabled = conf.get_bool("inspect_dns", true);
+        ni_cfg.protocol_enabled = conf.get_bool("inspect_protocol", true);
+        ni_cfg.connection_enabled = conf.get_bool("inspect_connections", true);
+        ni_cfg.entropy_enabled = conf.get_bool("inspect_entropy", true);
+
+        bool ni_enabled = conf.get_bool("inspector_enabled", true);
+        if (ni_enabled) {
+            net_inspector = std::make_unique<NetworkInspector>(ni_cfg);
+            logger->log(AsyncLogger::INFO,
+                "Network Inspector: ENABLED | dns=" + std::string(ni_cfg.dns_enabled ? "on" : "off")
+                + " protocol=" + std::string(ni_cfg.protocol_enabled ? "on" : "off")
+                + " entropy=" + std::string(ni_cfg.entropy_enabled ? "on" : "off"));
+        } else {
+            logger->log(AsyncLogger::INFO, "Network Inspector: disabled.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // PHASE 15 [CORRELATION ENGINE]: Initialize cross-device correlation
+    // -------------------------------------------------------------------------
+    {
+        bool corr_enabled = conf.get_bool("correlation_enabled", true);
+        if (corr_enabled) {
+            correlator = std::make_unique<CorrelationEngine>(
+                [](const CorrelatedIncident& inc) {
+                    if (logger) {
+                        logger->log(AsyncLogger::WARN,
+                            "[CORR] INCIDENT #" + std::to_string(inc.incident_id)
+                            + " | " + inc.rule_name + " | " + inc.severity
+                            + " | devices=" + std::to_string(inc.device_ids.size())
+                            + " | " + inc.description);
+                    }
+                    // Feed correlated incidents to IR engine
+                    if (ir_engine) {
+                        Incident ir_inc;
+                        ir_inc.device_id = inc.device_ids.empty() ? 0 : inc.device_ids[0];
+                        ir_inc.timestamp_ms = inc.first_seen_ms;
+                        ir_inc.source = "correlation";
+                        ir_inc.category = inc.rule_name;
+                        ir_inc.severity = inc.severity;
+                        ir_inc.mitre_id = inc.mitre_technique;
+                        ir_inc.description = inc.description;
+                        ir_engine->report_incident(ir_inc);
+                    }
+                });
+            logger->log(AsyncLogger::INFO,
+                "Correlation Engine: ENABLED | " + std::to_string(correlator->rule_count()) + " rules loaded");
+        } else {
+            logger->log(AsyncLogger::INFO, "Correlation Engine: disabled.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // 2. Security (Phase 3)
     // -------------------------------------------------------------------------
     init_openssl();
@@ -862,6 +1276,209 @@ int main(int argc, char* argv[]) {
     listen(s, 10);
     logger->log(AsyncLogger::INFO, "Secure mTLS Server started on Port " + std::to_string(port));
 
+    server_start_time = std::chrono::steady_clock::now();
+
+    // -------------------------------------------------------------------------
+    // PHASE 7 [REST API]: Initialize and start HTTP API server
+    // -------------------------------------------------------------------------
+    {
+        RestConfig rest_cfg;
+        rest_cfg.enabled      = conf.get_bool("rest_enabled", true);
+        rest_cfg.port         = conf.get_int("rest_port", 8080);
+        rest_cfg.bind_address = conf.get("rest_bind", "0.0.0.0");
+        rest_cfg.api_token    = conf.get("rest_api_token", "");
+
+        if (rest_cfg.enabled) {
+            rest_server = std::make_unique<RestServer>(rest_cfg);
+
+            // --- Dashboard ---
+            rest_server->get("/", [](const HttpRequest&) {
+                return HttpResponse::html(get_dashboard_html());
+            }, false);  // No auth for dashboard page (auth is in-page)
+
+            // --- Stats endpoint ---
+            rest_server->get("/api/stats", [](const HttpRequest&) {
+                auto uptime_s = std::chrono::duration_cast<std::chrono::seconds>(
+                    std::chrono::steady_clock::now() - server_start_time).count();
+
+                JsonBuilder j;
+                j.begin_object();
+                j.kv_int("uptime_hours", uptime_s / 3600);
+                j.kv_int("uptime_seconds", uptime_s);
+                if (pg_store) {
+                    j.kv_int("devices_online", pg_store->count_online_devices());
+                    j.kv_int("total_threats", pg_store->count_table("threat_detections"));
+                    j.kv_int("total_events", pg_store->count_table("security_events"));
+                    j.kv_int("total_ioc_hits", pg_store->count_table("ioc_matches"));
+                    j.kv_int("total_fim_changes", pg_store->count_table("fim_events"));
+                } else {
+                    j.kv_int("devices_online", 0);
+                    j.kv_int("total_threats", static_cast<int64_t>(g_total_threats.load()));
+                    j.kv_int("total_events", 0);
+                    j.kv_int("total_ioc_hits", 0);
+                    j.kv_int("total_fim_changes", 0);
+                }
+                if (threat_intel) {
+                    j.kv_int("iocs_loaded", static_cast<int64_t>(threat_intel->total_iocs()));
+                    j.kv_int("feeds_loaded", static_cast<int64_t>(threat_intel->feed_count()));
+                }
+                if (fim_monitor) {
+                    j.kv_int("fim_baselined_devices", static_cast<int64_t>(fim_monitor->baselined_devices()));
+                }
+                if (rest_server) {
+                    j.kv_int("api_requests", static_cast<int64_t>(rest_server->total_requests()));
+                }
+                // Phase 8: Incident Response stats
+                if (ir_engine) {
+                    j.kv_int("ir_incidents", static_cast<int64_t>(ir_engine->total_incidents()));
+                    j.kv_int("ir_actions_executed", static_cast<int64_t>(ir_engine->total_actions_executed()));
+                    j.kv_int("ir_blocked_ips", static_cast<int64_t>(ir_engine->blocked_count()));
+                    j.kv_int("ir_quarantined", static_cast<int64_t>(ir_engine->quarantined_count()));
+                }
+                // Phase 9: Fleet stats
+                if (fleet_mgr) {
+                    auto fs = fleet_mgr->get_summary();
+                    j.kv_int("fleet_total", static_cast<int64_t>(fs.total));
+                    j.kv_int("fleet_online", static_cast<int64_t>(fs.online));
+                    j.kv_int("fleet_stale", static_cast<int64_t>(fs.stale));
+                    j.kv_int("fleet_offline", static_cast<int64_t>(fs.offline));
+                    j.kv_int("fleet_quarantined", static_cast<int64_t>(fs.quarantined));
+                }
+                // Phase 10: Network Inspector stats
+                if (net_inspector) {
+                    j.kv_int("net_findings", static_cast<int64_t>(net_inspector->total_findings()));
+                    j.kv_int("net_inspections", static_cast<int64_t>(net_inspector->total_inspections()));
+                }
+                if (correlator) {
+                    j.kv_int("corr_incidents", static_cast<int64_t>(correlator->total_incidents()));
+                    j.kv_int("corr_active", static_cast<int64_t>(correlator->active_incidents()));
+                    j.kv_int("corr_rules", static_cast<int64_t>(correlator->rule_count()));
+                }
+                j.end_object();
+                return HttpResponse::json(j.str());
+            });
+
+            // Helper lambda: clamp user-supplied limits to sane ranges
+            auto clamp_limit = [](int v) {
+                if (v < 1) return 1;
+                if (v > 1000) return 1000;
+                return v;
+            };
+
+            // --- Threats endpoint ---
+            rest_server->get("/api/threats", [clamp_limit](const HttpRequest& req) {
+                int limit = clamp_limit(req.get_param_int("limit", 50));
+                int dev   = req.get_param_int("device_id", -1);
+                if (pg_store) return HttpResponse::json(pg_store->query_threats(limit, dev));
+                return HttpResponse::json("[]");
+            });
+
+            // --- IoC matches endpoint ---
+            rest_server->get("/api/ioc", [clamp_limit](const HttpRequest& req) {
+                int limit = clamp_limit(req.get_param_int("limit", 50));
+                int dev   = req.get_param_int("device_id", -1);
+                if (pg_store) return HttpResponse::json(pg_store->query_ioc_matches(limit, dev));
+                return HttpResponse::json("[]");
+            });
+
+            // --- FIM events endpoint ---
+            rest_server->get("/api/fim", [clamp_limit](const HttpRequest& req) {
+                int limit = clamp_limit(req.get_param_int("limit", 50));
+                int dev   = req.get_param_int("device_id", -1);
+                if (pg_store) return HttpResponse::json(pg_store->query_fim_events(limit, dev));
+                return HttpResponse::json("[]");
+            });
+
+            // --- Security events endpoint ---
+            rest_server->get("/api/events", [clamp_limit](const HttpRequest& req) {
+                int limit = clamp_limit(req.get_param_int("limit", 50));
+                int dev   = req.get_param_int("device_id", -1);
+                if (pg_store) return HttpResponse::json(pg_store->query_security_events(limit, dev));
+                return HttpResponse::json("[]");
+            });
+
+            // --- Phase 9: Fleet/devices endpoint ---
+            rest_server->get("/api/devices", [](const HttpRequest& req) {
+                if (!fleet_mgr) return HttpResponse::json("[]");
+                int dev = req.get_param_int("device_id", -1);
+                if (dev >= 0) return HttpResponse::json("[" + fleet_mgr->device_to_json(dev) + "]");
+                return HttpResponse::json(fleet_mgr->to_json());
+            });
+
+            // --- Phase 8: Incident response endpoints ---
+            rest_server->get("/api/ir/actions", [](const HttpRequest&) {
+                if (!ir_engine) return HttpResponse::json("[]");
+                auto actions = ir_engine->get_recent_actions(100);
+                std::string json = "[";
+                for (size_t i = 0; i < actions.size(); i++) {
+                    if (i > 0) json += ",";
+                    const auto& a = actions[i];
+                    json += "{\"timestamp_ms\":" + std::to_string(a.timestamp_ms)
+                        + ",\"device_id\":" + std::to_string(a.device_id)
+                        + ",\"source\":\"" + a.incident_source + "\""
+                        + ",\"category\":\"" + a.incident_category + "\""
+                        + ",\"severity\":\"" + a.severity + "\""
+                        + ",\"action\":\"" + action_type_str(a.action_type) + "\""
+                        + ",\"target\":\"" + HttpResponse::json_escape(a.target) + "\""
+                        + ",\"success\":" + (a.success ? "true" : "false")
+                        + ",\"detail\":\"" + HttpResponse::json_escape(a.detail) + "\"}";
+                }
+                json += "]";
+                return HttpResponse::json(json);
+            });
+
+            rest_server->get("/api/ir/blocklist", [](const HttpRequest&) {
+                if (!ir_engine) return HttpResponse::json("[]");
+                auto blocks = ir_engine->get_blocklist();
+                std::string json = "[";
+                for (size_t i = 0; i < blocks.size(); i++) {
+                    if (i > 0) json += ",";
+                    const auto& b = blocks[i];
+                    json += "{\"ip\":\"" + b.ip + "\""
+                        + ",\"blocked_at_ms\":" + std::to_string(b.blocked_at_ms)
+                        + ",\"expires_at_ms\":" + std::to_string(b.expires_at_ms)
+                        + ",\"reason\":\"" + HttpResponse::json_escape(b.reason) + "\""
+                        + ",\"device_id\":" + std::to_string(b.device_id) + "}";
+                }
+                json += "]";
+                return HttpResponse::json(json);
+            });
+
+            rest_server->get("/api/ir/quarantined", [](const HttpRequest&) {
+                if (!ir_engine) return HttpResponse::json("[]");
+                auto q = ir_engine->get_quarantined();
+                std::string json = "[";
+                bool first = true;
+                for (int32_t dev : q) {
+                    if (!first) json += ",";
+                    first = false;
+                    json += std::to_string(dev);
+                }
+                json += "]";
+                return HttpResponse::json(json);
+            });
+
+            // --- Phase 15: Correlated incidents endpoint ---
+            rest_server->get("/api/correlations", [clamp_limit](const HttpRequest& req) {
+                if (!correlator) return HttpResponse::json("[]");
+                int limit = clamp_limit(req.get_param_int("limit", 50));
+                return HttpResponse::json(correlator->incidents_to_json(limit));
+            });
+
+            if (rest_server->start()) {
+                logger->log(AsyncLogger::INFO,
+                    "REST API: ENABLED on port " + std::to_string(rest_cfg.port)
+                    + " | auth=" + (rest_cfg.api_token.empty() ? "none" : "token")
+                    + " | dashboard at http://localhost:" + std::to_string(rest_cfg.port) + "/");
+            } else {
+                logger->log(AsyncLogger::ERROR_LOG,
+                    "REST API: FAILED to start on port " + std::to_string(rest_cfg.port));
+            }
+        } else {
+            logger->log(AsyncLogger::INFO, "REST API: disabled.");
+        }
+    }
+
     // -------------------------------------------------------------------------
     // DYNAMIC THREAD POOL
     // -------------------------------------------------------------------------
@@ -887,7 +1504,7 @@ int main(int argc, char* argv[]) {
                 if (threat_intel) {
                     if (threat_intel->check_and_reload()) {
                         logger->log(AsyncLogger::INFO,
-                            "Threat Intel: feeds reloaded — " + std::to_string(threat_intel->total_iocs()) + " IoCs");
+                            "Threat Intel: feeds reloaded -- " + std::to_string(threat_intel->total_iocs()) + " IoCs");
                     }
                 }
 
@@ -902,6 +1519,17 @@ int main(int argc, char* argv[]) {
                                      << " loaded, " << threat_intel->total_matches.load() << " hits";
                 if (fim_monitor) ss << " | FIM: " << fim_monitor->baselined_devices()
                                     << " devices, " << fim_monitor->total_changes() << " changes";
+                if (rest_server) ss << " | API: " << rest_server->total_requests() << " requests";
+                if (ir_engine) ss << " | IR: " << ir_engine->total_incidents() << " incidents, "
+                                  << ir_engine->blocked_count() << " blocked";
+                if (fleet_mgr) {
+                    fleet_mgr->refresh_health();
+                    auto fs = fleet_mgr->get_summary();
+                    ss << " | Fleet: " << fs.online << "/" << fs.total << " online";
+                }
+                if (net_inspector) ss << " | NetInsp: " << net_inspector->total_findings() << " findings";
+                if (correlator) ss << " | Corr: " << correlator->active_incidents() << " active, "
+                                   << correlator->total_incidents() << " total";
                 if (pg_store) ss << " | DB: " << (pg_store->is_connected() ? "up" : "down");
                 logger->log(AsyncLogger::INFO, ss.str());
             }
@@ -927,6 +1555,13 @@ int main(int argc, char* argv[]) {
     // 5. Cleanup
     // -------------------------------------------------------------------------
     logger->log(AsyncLogger::INFO, "=== Server exiting gracefully ===");
+    if (rest_server) rest_server->stop();
+    if (ir_engine) ir_engine->stop();
+    rest_server.reset();
+    ir_engine.reset();
+    fleet_mgr.reset();
+    net_inspector.reset();
+    correlator.reset();
     fim_monitor.reset();
     threat_intel.reset();
     classifier.reset();

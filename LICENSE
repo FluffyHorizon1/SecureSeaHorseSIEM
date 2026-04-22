@@ -1,91 +1,355 @@
 ===============================================================================
                 SECURESEAHORSE PROPRIETARY LICENSE AGREEMENT
 ===============================================================================
-Version 1.0 | Effective Date: February 10, 2026
+Version 3.1 | Effective Date: April 22, 2026
 Copyright (c) 2024-2026 Secured Cyber Solutions Limited. All rights reserved.
+
+This Agreement governs the use of SecureSeaHorse SIEM v3.1.1 and all earlier
+versions. It supersedes Version 1.0 (February 10, 2026) in its entirety.
 
 -------------------------------------------------------------------------------
 1. DEFINITIONS
 -------------------------------------------------------------------------------
-"Software" refers to the SecureSeaHorse telemetry system, including but not 
-limited to the C++ source code (Client/Server), build scripts, certificate 
-generation helpers, and documentation.
+"Software" refers to the SecureSeaHorse SIEM platform, including but not
+limited to the C++ source code (Client/Server and all headers in src/server/
+and src/client/), build scripts, CMake configuration, installer scripts for
+Linux and Windows, certificate generation helpers, configuration templates
+(server.conf, client.conf, rules.conf), built-in threat intelligence feeds,
+dashboard HTML/JavaScript, and all documentation (README, USER_MANUAL,
+changelogs).
 
-"Authorized User" means an individual or entity granted express written 
-permission by Secured Cyber Solutions Limited to access the Software.
+"Authorized User" means an individual or entity granted express written
+permission by Secured Cyber Solutions Limited to access and use the Software.
 
-"Security Protocols" refers to the mTLS implementation and CRC32 integrity 
-checks inherent to the Software’s operation.
+"Security Protocols" refers to the mutual TLS (mTLS) implementation, HMAC-SHA256
+packet integrity checks, RFC 5705 keying material exporter, certificate
+revocation list (CRL) support, OCSP stapling, SHA-256 certificate pinning,
+and the v2 binary wire protocol inherent to the Software's operation.
+
+"Detection Engines" refers to the proprietary analysis subsystems including
+the Traffic Classifier (6 attack categories with MITRE ATT&CK mapping),
+Threat Intelligence engine (7 IoC types with feed auto-reload), Regex
+Analysis Engine, Alert Engine, File Integrity Monitor, Process Monitor,
+Connection Inventory, Session & Authentication Tracker, Software Inventory,
+Network Deep Inspector (DNS/protocol/entropy analyzers), and the
+Correlation Engine with its kill-chain rule library.
+
+"Response Subsystems" refers to the Incident Response Engine with its
+playbook library, IP blocklist, device quarantine, audit trail, the
+Agent Fleet Manager, and the REST API server with embedded web dashboard.
+
+"Derivative Work" means any modification, adaptation, translation, or work
+based upon the Software, including but not limited to ports to other
+programming languages, alternative protocol implementations that preserve
+the Software's detection logic, or forks incorporating substantial portions
+of the Detection Engines or Response Subsystems.
+
+"Third-Party Components" refers to open-source libraries the Software
+depends on at build or run time, including OpenSSL, libpq (PostgreSQL
+client library), and the Nullsoft Scriptable Install System (NSIS). Each
+Third-Party Component is governed by its own license, and nothing in this
+Agreement alters those terms.
 
 -------------------------------------------------------------------------------
 2. GRANT OF LICENSE
 -------------------------------------------------------------------------------
-Subject to the terms of this Agreement, Secured Cyber Solutions Limited grants 
-the Authorized User a non-exclusive, non-transferable, and revocable license 
-to use the Software solely for internal telemetry and monitoring purposes. 
-This license does not constitute a sale of the Software or any copies thereof.
+Subject to the terms of this Agreement, Secured Cyber Solutions Limited
+grants the Authorized User a non-exclusive, non-transferable, non-sublicensable,
+and revocable license to:
+
+    A. Install and execute the Software on systems owned or controlled by
+       the Authorized User, for internal security monitoring, telemetry
+       collection, threat detection, incident response, and compliance
+       reporting purposes.
+
+    B. Deploy the Client agent to endpoints within the Authorized User's
+       organization in reasonable quantities commensurate with the
+       monitoring scope agreed in writing.
+
+    C. Modify local configuration files (server.conf, client.conf,
+       rules.conf) and add custom threat intelligence feed files (CSV)
+       to tailor the Software to the Authorized User's environment.
+
+    D. Generate and manage the Authorized User's own TLS certificates,
+       CA material, and API tokens for use with the Software.
+
+This license does not constitute a sale of the Software or any copies
+thereof. All right, title, and interest in and to the Software remain
+the exclusive property of Secured Cyber Solutions Limited.
 
 -------------------------------------------------------------------------------
 3. RESTRICTIONS & SECURITY INTEGRITY
 -------------------------------------------------------------------------------
-To maintain the security posture of the SecureSeaHorse ecosystem, the 
-following actions are strictly prohibited:
+To maintain the security posture and proprietary nature of the
+SecureSeaHorse ecosystem, the following actions are strictly prohibited:
 
-    A. REVERSE ENGINEERING: You may not decompile, disassemble, or attempt 
-       to derive the source code or underlying algorithms of the Software, 
-       particularly the mTLS handshake logic and custom TCP protocol.
+    A. REVERSE ENGINEERING: You may not decompile, disassemble, or attempt
+       to derive the source code or underlying algorithms of compiled
+       binaries distributed without source, particularly the Security
+       Protocols, the Detection Engines, the Correlation Engine's rule
+       matching logic, the adaptive baseline (EWMA) calculations, or the
+       Network Deep Inspector's entropy and DGA detection heuristics.
 
-    B. CIRCUMVENTION: Any attempt to bypass, modify, or tamper with the 
-       mTLS authentication or CRC32 packet integrity checks is a material 
-       |breach of this license.
+    B. CIRCUMVENTION: Any attempt to bypass, modify, or tamper with the
+       mTLS authentication, HMAC-SHA256 packet integrity verification,
+       certificate pinning, bearer token authentication on the REST API,
+       HTML escaping in the web dashboard, or the input-validation caps
+       added in v3.1.1 (HTTP parser limits, regex input caps, feed loader
+       caps, SQL parameter clamping) is a material breach of this license.
 
-    C. REDISTRIBUTION: You may not sub-license, rent, lease, or lend the 
-       Software to any third party without prior written consent.
+    C. REDISTRIBUTION: You may not sub-license, rent, lease, lend, sell,
+       resell, assign, or otherwise transfer the Software, in whole or in
+       part, to any third party without prior express written consent from
+       Secured Cyber Solutions Limited.
+
+    D. DERIVATIVE WORKS: You may not create, distribute, or publish
+       Derivative Works based on the Software. This includes but is not
+       limited to ports, rewrites, plugins, or standalone tools that
+       incorporate or imitate the Detection Engines, Response Subsystems,
+       Correlation Engine rules, or wire protocol.
+
+    E. COMPETING PRODUCTS: You may not use the Software, any part of its
+       source code, or any insights gained from studying its source to
+       develop, market, or sell a product that competes with SecureSeaHorse
+       in the SIEM, EDR, or security monitoring markets.
+
+    F. REMOVAL OF NOTICES: You may not remove, alter, or obscure any
+       copyright, trademark, author attribution, or license notices
+       contained in the Software.
+
+    G. MALICIOUS USE: You may not use the Software to conduct unauthorized
+       surveillance, to monitor systems you do not have legal authority to
+       monitor, or in any manner that violates applicable laws or the
+       privacy rights of others.
+
+    H. BENCHMARKING & PUBLIC DISCLOSURE: You may not publish benchmarks,
+       performance comparisons, vulnerability disclosures (other than
+       private reports to Secured Cyber Solutions Limited under a
+       responsible disclosure process), or security assessments of the
+       Software without prior written consent.
 
 -------------------------------------------------------------------------------
 4. CONFIDENTIALITY
 -------------------------------------------------------------------------------
-The Software contains trade secrets and proprietary information. The 
-Authorized User shall maintain the Software in strict confidence and shall 
-not disclose the internal directory structures, configuration templates, or 
-cryptographic methodologies (excepting public-domain OpenSSL standards) to 
-any unauthorized third party.
+The Software contains trade secrets and proprietary information of
+Secured Cyber Solutions Limited, including but not limited to:
+
+    - The internal directory structures and module organization
+    - The Detection Engines' heuristics, thresholds, and baseline algorithms
+    - The Correlation Engine's kill-chain rule library and scoring formulas
+    - The Incident Response Engine's playbook definitions and cooldown logic
+    - Configuration templates and their semantics
+    - The v2 wire protocol message format and HMAC derivation method
+    - Cryptographic methodologies layered above the public-domain OpenSSL
+      primitives the Software calls into
+
+The Authorized User shall maintain the Software in strict confidence and
+shall not disclose any of the above to any unauthorized third party. This
+confidentiality obligation survives termination of this Agreement.
+
+Nothing in this section restricts disclosure of information that is:
+(a) publicly known through no fault of the Authorized User, (b) already in
+the Authorized User's possession prior to disclosure, or (c) required to
+be disclosed by law or court order (provided the Authorized User gives
+prompt written notice to Secured Cyber Solutions Limited where legally
+permitted).
 
 -------------------------------------------------------------------------------
 5. DATA PRIVACY & TELEMETRY
 -------------------------------------------------------------------------------
-The User acknowledges that SecureSeaHorse is designed to scrape system logs 
-(Syslog/EventLog) and performance metrics. It is the User’s sole 
-responsibility to ensure that the deployment of this Software complies with 
-local data protection laws (e.g., GDPR, CCPA). Secured Cyber Solutions 
-Limited is not liable for the sensitive nature of the data transmitted 
-via the Software.
+The Authorized User acknowledges that SecureSeaHorse is designed to
+collect, process, and store security-relevant data including:
+
+    - System performance metrics (CPU, RAM, disk, network)
+    - System logs (Syslog, Windows Event Log)
+    - File integrity hashes and modification events
+    - Running processes with command lines and owners
+    - Active TCP/UDP network connections
+    - Interactive user sessions and authentication events (successful
+      logins, failed logins, source IP addresses, sudo/runas events)
+    - Installed software inventory with versions
+    - Correlated multi-stage attack incidents spanning multiple devices
+
+It is the Authorized User's sole responsibility to ensure that the
+deployment of this Software complies with all applicable local, national,
+and international data protection laws (e.g., GDPR, UK GDPR, CCPA, HIPAA,
+PIPEDA), to obtain any required employee or data-subject consents, to
+publish any required privacy notices, and to implement appropriate data
+retention and deletion policies within PostgreSQL and the Software's
+log files.
+
+Secured Cyber Solutions Limited is not liable for the sensitive nature of
+the data collected, transmitted, stored, or displayed via the Software, or
+for any regulatory consequences of the Authorized User's deployment choices.
 
 -------------------------------------------------------------------------------
-6. NO WARRANTY (AS-IS)
+6. THIRD-PARTY COMPONENTS
 -------------------------------------------------------------------------------
-DISCLAIMER: THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, 
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF 
-MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. 
-IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, 
-DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR 
-OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE.
+The Software uses and links against the following Third-Party Components:
+
+    - OpenSSL (Apache License 2.0) -- TLS, HMAC, SHA-256, certificate handling
+    - libpq (PostgreSQL License) -- PostgreSQL client connectivity
+    - NSIS (zlib/libpng license) -- Windows installer framework (build-time)
+
+These components are governed by their own respective licenses, and nothing
+in this Agreement overrides or modifies those terms. The Authorized User is
+responsible for complying with the license terms of any Third-Party
+Component, including redistribution notices where applicable.
+
+No claim of ownership is made over any Third-Party Component. All other
+code, logic, documentation, and configuration shipped as part of
+SecureSeaHorse is proprietary to Secured Cyber Solutions Limited.
 
 -------------------------------------------------------------------------------
-7. TERMINATION
+7. INTELLECTUAL PROPERTY
 -------------------------------------------------------------------------------
-This license is effective until terminated. Your rights under this license 
-will terminate automatically without notice if you fail to comply with any 
-term(s) of this agreement. Upon termination, you shall cease all use of the 
-Software and destroy all copies, full or partial, thereof.
+All intellectual property rights in the Software, including copyrights,
+trade secrets, patent rights (whether registered or pending), and
+trademarks, are and shall remain the exclusive property of Secured Cyber
+Solutions Limited. This Agreement does not transfer any such rights to the
+Authorized User except the limited license expressly granted in Section 2.
+
+"SecureSeaHorse" and the seahorse logo are trademarks of Secured Cyber
+Solutions Limited. The Authorized User may refer to the Software by name
+for the purpose of identifying it within their own internal documentation
+and security operations procedures, but may not use the name or logo in
+marketing, advertising, or any context that implies endorsement or
+partnership without prior written consent.
 
 -------------------------------------------------------------------------------
-8. GOVERNING LAW
+8. NO WARRANTY (AS-IS)
 -------------------------------------------------------------------------------
-This Agreement shall be governed by and construed in accordance with the 
-laws of the jurisdiction in which Secured Cyber Solutions Limited is 
-registered, without regard to its conflict of law principles.
+DISCLAIMER: THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT
+WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE
+WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+NON-INFRINGEMENT, ACCURACY, OR UNINTERRUPTED OPERATION.
+
+WITHOUT LIMITING THE FOREGOING, SECURED CYBER SOLUTIONS LIMITED DOES NOT
+WARRANT THAT:
+
+    - The Software will detect every threat or attack
+    - The Software is free of defects or vulnerabilities
+    - The Software's detection engines produce zero false positives or
+      zero false negatives
+    - The Software's automated incident response actions will always be
+      appropriate for the Authorized User's environment
+    - The v3.1.1 security audit has identified every possible issue
+
+The Authorized User acknowledges that no security product provides complete
+protection, and that the Software must be operated as one layer within a
+broader defense-in-depth strategy.
+
+-------------------------------------------------------------------------------
+9. LIMITATION OF LIABILITY
+-------------------------------------------------------------------------------
+IN NO EVENT SHALL SECURED CYBER SOLUTIONS LIMITED, ITS DIRECTORS, OFFICERS,
+EMPLOYEES, OR AFFILIATES BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT (INCLUDING NEGLIGENCE),
+OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR
+THE USE OR OTHER DEALINGS IN THE SOFTWARE, INCLUDING BUT NOT LIMITED TO:
+
+    - Missed detections or false positives
+    - Automated incident response actions (IP blocking, device quarantine,
+      webhook triggers, or script execution) and their downstream effects
+    - Data loss, corruption, or unauthorized disclosure
+    - Business interruption, lost profits, or reputational harm
+    - Any indirect, incidental, special, consequential, exemplary, or
+      punitive damages, even if advised of the possibility of such damages
+
+To the maximum extent permitted by law, the total aggregate liability of
+Secured Cyber Solutions Limited under this Agreement shall not exceed the
+fees paid by the Authorized User for the Software in the twelve (12) months
+preceding the claim, or GBP 100, whichever is greater.
+
+-------------------------------------------------------------------------------
+10. EXPORT CONTROL
+-------------------------------------------------------------------------------
+The Software contains cryptographic functionality and may be subject to
+export control laws and regulations of the United Kingdom, the European
+Union, the United States, and other jurisdictions. The Authorized User
+agrees to comply with all applicable export and re-export restrictions and
+not to export, re-export, or transfer the Software to any country, entity,
+or individual prohibited by such laws.
+
+-------------------------------------------------------------------------------
+11. TERMINATION
+-------------------------------------------------------------------------------
+This license is effective from the date the Authorized User first installs
+or uses the Software and continues until terminated.
+
+The Authorized User's rights under this license will terminate automatically
+and without notice if the Authorized User fails to comply with any term of
+this Agreement. Secured Cyber Solutions Limited may also terminate this
+license at any time with thirty (30) days' written notice.
+
+Upon termination:
+
+    A. The Authorized User shall immediately cease all use of the Software.
+    B. The Authorized User shall destroy all copies of the Software, full
+       or partial, in their possession or control, including binaries,
+       source code, configuration files, and documentation.
+    C. The Authorized User shall revoke all TLS certificates issued under
+       the Software's CA and purge all telemetry and event data from the
+       PostgreSQL database, unless retention is required by law.
+    D. Sections 3 (Restrictions), 4 (Confidentiality), 7 (Intellectual
+       Property), 8 (No Warranty), 9 (Limitation of Liability), 10
+       (Export Control), and 13 (Governing Law) shall survive termination.
+
+-------------------------------------------------------------------------------
+12. UPDATES & SUPPORT
+-------------------------------------------------------------------------------
+This Agreement covers the version of the Software to which it is
+distributed (v3.1.1) and any prior versions. Future releases may be
+governed by separate terms.
+
+Nothing in this Agreement obligates Secured Cyber Solutions Limited to
+provide updates, patches, bug fixes, or technical support. Security fixes
+such as those introduced in v3.1.1 are provided on a best-effort basis.
+
+-------------------------------------------------------------------------------
+13. GOVERNING LAW
+-------------------------------------------------------------------------------
+This Agreement shall be governed by and construed in accordance with the
+laws of England and Wales (or such other jurisdiction in which Secured
+Cyber Solutions Limited is registered at the time of the dispute), without
+regard to its conflict-of-law principles. The parties submit to the
+exclusive jurisdiction of the courts of that jurisdiction for the
+resolution of any disputes arising under this Agreement.
+
+-------------------------------------------------------------------------------
+14. SEVERABILITY
+-------------------------------------------------------------------------------
+If any provision of this Agreement is held to be invalid, illegal, or
+unenforceable by a court of competent jurisdiction, the remaining
+provisions shall continue in full force and effect. The invalid or
+unenforceable provision shall be deemed modified to the minimum extent
+necessary to make it valid and enforceable while preserving the original
+intent of the parties.
+
+-------------------------------------------------------------------------------
+15. ENTIRE AGREEMENT
+-------------------------------------------------------------------------------
+This Agreement constitutes the entire agreement between the Authorized
+User and Secured Cyber Solutions Limited concerning the Software, and
+supersedes all prior or contemporaneous oral or written communications,
+proposals, and representations, including Version 1.0 of this license
+dated February 10, 2026.
+
+No modification of or amendment to this Agreement shall be binding unless
+in writing and signed by a duly authorized representative of Secured Cyber
+Solutions Limited.
+
+-------------------------------------------------------------------------------
+16. CONTACT
+-------------------------------------------------------------------------------
+For licensing inquiries, responsible security disclosures, or requests to
+use the Software in a manner not covered by this Agreement, please contact:
+
+    Secured Cyber Solutions Limited
+    legal@securedcyber.solutions    (licensing & commercial)
+    security@securedcyber.solutions (responsible disclosure, PGP preferred)
 
 ===============================================================================
                             END OF AGREEMENT
+                  SecureSeaHorse SIEM v3.1.1 - April 2026
 ===============================================================================

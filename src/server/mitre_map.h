@@ -2,7 +2,7 @@
 #define MITRE_MAP_H
 
 // =============================================================================
-// SecureSeaHorse SIEM — Phase 4: MITRE ATT&CK Technique Mapping
+// SecureSeaHorse SIEM -- Phase 4: MITRE ATT&CK Technique Mapping
 // =============================================================================
 // Maps each detection sub-type to its official MITRE ATT&CK technique ID,
 // tactic, and description. Used by TrafficClassifier to tag detections.
@@ -21,13 +21,13 @@ struct MitreTechnique {
 };
 
 // =============================================================================
-// GLOBAL MITRE REGISTRY — Populated at startup, read-only thereafter
+// GLOBAL MITRE REGISTRY -- Populated at startup, read-only thereafter
 // =============================================================================
 inline const std::map<std::string, MitreTechnique>& get_mitre_map() {
     static const std::map<std::string, MitreTechnique> mitre = {
 
         // =====================================================================
-        // DDoS — Impact
+        // DDoS -- Impact
         // =====================================================================
         {"ddos_volumetric", {
             "T1498", "Network Denial of Service",
@@ -51,7 +51,7 @@ inline const std::map<std::string, MitreTechnique>& get_mitre_map() {
         }},
 
         // =====================================================================
-        // Port Scanning — Reconnaissance / Discovery
+        // Port Scanning -- Reconnaissance / Discovery
         // =====================================================================
         {"portscan_sequential", {
             "T1046", "Network Service Scanning",
@@ -75,7 +75,7 @@ inline const std::map<std::string, MitreTechnique>& get_mitre_map() {
         }},
 
         // =====================================================================
-        // Brute Force — Credential Access
+        // Brute Force -- Credential Access
         // =====================================================================
         {"bruteforce_standard", {
             "T1110.001", "Brute Force: Password Guessing",
@@ -94,7 +94,7 @@ inline const std::map<std::string, MitreTechnique>& get_mitre_map() {
         }},
 
         // =====================================================================
-        // Data Exfiltration — Exfiltration
+        // Data Exfiltration -- Exfiltration
         // =====================================================================
         {"exfil_volume_anomaly", {
             "T1048", "Exfiltration Over Alternative Protocol",
@@ -118,7 +118,7 @@ inline const std::map<std::string, MitreTechnique>& get_mitre_map() {
         }},
 
         // =====================================================================
-        // C2 Beaconing — Command and Control
+        // C2 Beaconing -- Command and Control
         // =====================================================================
         {"c2_periodic_beacon", {
             "T1071", "Application Layer Protocol",
@@ -147,7 +147,7 @@ inline const std::map<std::string, MitreTechnique>& get_mitre_map() {
         }},
 
         // =====================================================================
-        // Lateral Movement — Lateral Movement / Discovery
+        // Lateral Movement -- Lateral Movement / Discovery
         // =====================================================================
         {"lateral_internal_scan", {
             "T1018", "Remote System Discovery",
@@ -190,7 +190,7 @@ inline const std::map<std::string, MitreTechnique>& get_mitre_map() {
 }
 
 // =============================================================================
-// LOOKUP HELPER — Returns a default "Unknown" technique if key not found
+// LOOKUP HELPER -- Returns a default "Unknown" technique if key not found
 // =============================================================================
 inline MitreTechnique lookup_mitre(const std::string& sub_type) {
     const auto& map = get_mitre_map();
