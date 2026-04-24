@@ -29,6 +29,9 @@
 #include "session_tracker.h"     // Phase 13: Session & auth tracking
 #include "software_inventory.h"  // Phase 14: Software inventory
 
+// --- Phase 17 & 19 (v5.0) ---
+#include "seahorse_client_v5_additions.h"
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -98,6 +101,11 @@ static std::unique_ptr<SoftwareScanner>   sw_scanner;       // Phase 14
 static std::atomic<bool> proc_initial_done{false};
 static std::atomic<bool> conn_initial_done{false};
 static std::atomic<bool> sw_initial_done{false};
+
+// --- Phase 17 & 19 (v5.0) ---
+static std::unique_ptr<ClientSelfProtection> self_protection;
+static std::unique_ptr<ClientUsbMonitor>     usb_monitor;
+static UsbReportQueue                        usb_queue;
 
 // =============================================================================
 // OPENSSL INITIALIZATION -- Phase 3 Upgraded
@@ -686,7 +694,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (cli.show_version) {
-        std::cout << "SecureSeaHorse Client v2.5.0 (Phase 15)\n";
+        std::cout << "SecureSeaHorse Client v5.0.0 (Phases 1-25)\n";
         return 0;
     }
 
@@ -720,7 +728,7 @@ int main(int argc, char* argv[]) {
         logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
     }
 
-    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v2.5.0 (Phase 15) starting ===");
+    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v5.0.0 (Phases 1-25) starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
     logger->log(AsyncLogger::INFO, "Target: " + server_ip + ":" + std::to_string(port)
                  + " | Device ID: " + std::to_string(my_id));
@@ -839,6 +847,109 @@ int main(int argc, char* argv[]) {
         swcfg.scan_interval_s = sw_interval;
         sw_scanner = std::make_unique<SoftwareScanner>(swcfg);
         logger->log(AsyncLogger::INFO, "Software Inventory: ENABLED | scan every " + std::to_string(sw_interval) + "s");
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 17: Self-protection (tamper detection + watchdog + updater)
+    // -------------------------------------------------------------------------
+    if (conf.get_bool("self_protection_enabled", false)) {
+        ClientSelfProtection::Config sp;
+        sp.enabled = true;
+        sp.tamper_baseline_path  = conf.get("tamper_baseline",
+                                    conf.get("tamper_baseline_path", "agent_baseline.json"));
+        {
+            // Accept either an inline comma-separated list (patch-doc form)
+            // or a file path (v5 reference form).
+            std::string paths = conf.get("tamper_protected_paths", "");
+            if (!paths.empty()) {
+                std::istringstream iss(paths);
+                std::string p;
+                while (std::getline(iss, p, ',')) {
+                    while (!p.empty() && (p.front() == ' ' || p.front() == '\t')) p.erase(p.begin());
+                    while (!p.empty() && (p.back()  == ' ' || p.back()  == '\t')) p.pop_back();
+                    if (!p.empty()) sp.protected_paths.push_back(p);
+                }
+            } else {
+                std::string paths_file = conf.get("tamper_protected_paths_file", "");
+                if (!paths_file.empty()) {
+                    std::ifstream ifs(paths_file);
+                    std::string line;
+                    while (std::getline(ifs, line)) {
+                        // Trim and skip comments / empty lines
+                        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.erase(line.begin());
+                        while (!line.empty() && (line.back()  == ' ' || line.back()  == '\t' || line.back() == '\r')) line.pop_back();
+                        if (line.empty() || line[0] == '#') continue;
+                        sp.protected_paths.push_back(line);
+                    }
+                }
+            }
+        }
+        // v5 client.conf uses tamper_interval_s; patch doc used tamper_check_s.
+        sp.tamper_check_interval_s    = conf.get_int("tamper_interval_s",
+                                         conf.get_int("tamper_check_s", 60));
+        sp.watchdog_liveness_ping_s   = conf.get_int("watchdog_ping_s", 30);
+        sp.watchdog_stall_threshold_s = conf.get_int("watchdog_stall_s", 180);
+        // v5 client.conf uses update_pub_key_pem; patch doc used update_pubkey.
+        sp.update_pubkey_path         = conf.get("update_pub_key_pem",
+                                         conf.get("update_pubkey", "update_pubkey.pem"));
+        // Both names are identical in the reference config and in the patch doc.
+        sp.update_staging_dir         = conf.get("update_staging_dir",
+                                         conf.get("update_staging", "update_staging"));
+        sp.current_version            = conf.get("client_version", "5.0.0");
+
+        auto on_stall = []() {
+            std::cerr << "[WATCHDOG] Main loop stalled past threshold -- exiting.\n";
+            std::_Exit(2);
+        };
+        self_protection = std::make_unique<ClientSelfProtection>(sp, on_stall);
+        self_protection->start();
+        logger->log(AsyncLogger::INFO, "Self-Protection: ENABLED | protected_paths="
+                     + std::to_string(sp.protected_paths.size())
+                     + " | watchdog ping=" + std::to_string(sp.watchdog_liveness_ping_s)
+                     + "s stall=" + std::to_string(sp.watchdog_stall_threshold_s) + "s"
+                     + " | autoupdate=" + std::string(conf.get_bool("autoupdate_enabled", false) ? "on" : "off"));
+    }
+
+    // -------------------------------------------------------------------------
+    // Phase 19: USB device monitor
+    // -------------------------------------------------------------------------
+    if (conf.get_bool("usb_monitor_enabled", false)) {
+        ClientUsbMonitor::Config uc;
+        uc.enabled         = true;
+        uc.scan_interval_s = conf.get_int("usb_scan_interval_s", 60);
+        uc.device_id       = conf.get_int("device_id", 0);
+        {
+            // Accept either an inline comma-separated list (patch-doc form)
+            // or a path to a whitelist file with one entry per line (v5 form).
+            std::string wl = conf.get("usb_whitelist", "");
+            if (!wl.empty()) {
+                std::istringstream iss(wl);
+                std::string entry;
+                while (std::getline(iss, entry, ',')) {
+                    while (!entry.empty() && (entry.front() == ' ' || entry.front() == '\t')) entry.erase(entry.begin());
+                    while (!entry.empty() && (entry.back()  == ' ' || entry.back()  == '\t')) entry.pop_back();
+                    if (!entry.empty()) uc.whitelist.push_back(entry);
+                }
+            } else {
+                std::string wl_file = conf.get("usb_whitelist_file", "");
+                if (!wl_file.empty()) {
+                    std::ifstream ifs(wl_file);
+                    std::string line;
+                    while (std::getline(ifs, line)) {
+                        while (!line.empty() && (line.front() == ' ' || line.front() == '\t')) line.erase(line.begin());
+                        while (!line.empty() && (line.back()  == ' ' || line.back()  == '\t' || line.back() == '\r')) line.pop_back();
+                        if (line.empty() || line[0] == '#') continue;
+                        uc.whitelist.push_back(line);
+                    }
+                }
+            }
+        }
+        usb_monitor = std::make_unique<ClientUsbMonitor>(uc, usb_queue);
+        usb_monitor->start();
+        logger->log(AsyncLogger::INFO, "USB Monitor: ENABLED | scan every "
+                     + std::to_string(uc.scan_interval_s) + "s | whitelist="
+                     + std::to_string(uc.whitelist.size())
+                     + " | enforcement=" + std::string(conf.get_bool("usb_whitelist_enforcement", false) ? "on" : "off"));
     }
 
     if (!is_elevated()) logger->log(AsyncLogger::WARN, "Not running as Admin/Root. Log scraping may fail.");
@@ -1009,6 +1120,9 @@ int main(int argc, char* argv[]) {
                               std::chrono::seconds(sw_interval);  // Trigger immediately on first iteration
 
         while (g_running && session_alive) {
+            // --- Phase 17: Watchdog liveness ping ---
+            if (self_protection) self_protection->mark_alive();
+
             // --- Gather telemetry ---
             RawTelemetry r;
             std::memset(&r, 0, sizeof(r));
@@ -1039,6 +1153,21 @@ int main(int argc, char* argv[]) {
             r_net.disk_free_bytes  = htonll_custom(r.disk_free_bytes);
             r_net.net_bytes_in     = htonll_custom(r.net_bytes_in);
             r_net.net_bytes_out    = htonll_custom(r.net_bytes_out);
+
+            // --- Phase 19: Drain any queued USB reports (v2 header + HMAC) ---
+            if (usb_monitor && hmac_active) {
+                drain_usb_queue(usb_queue, [&](const std::string& payload) -> bool {
+                    PacketHeaderV2 hdr = build_v2_header(
+                        MSG_USB_REPORT,
+                        static_cast<uint32_t>(payload.size()),
+                        reinterpret_cast<const uint8_t*>(payload.data()),
+                        hmac_key);
+                    if (!send_exact_ssl(ssl, &hdr, sizeof(hdr))) return false;
+                    if (!send_exact_ssl(ssl, payload.data(),
+                                        static_cast<int>(payload.size()))) return false;
+                    return true;
+                });
+            }
 
             // --- Send with appropriate protocol version ---
             bool ok;
@@ -1116,6 +1245,15 @@ int main(int argc, char* argv[]) {
                 }
             }
 
+            // --- Phase 17: Periodic tamper baseline verification ---
+            if (self_protection && !self_protection->verify_tamper_baseline()) {
+                logger->log(AsyncLogger::ERROR_LOG,
+                    "[TAMPER] Baseline broken: " + self_protection->last_tamper_path()
+                    + " | expected=" + self_protection->last_tamper_expect()
+                    + " | actual="   + self_protection->last_tamper_actual());
+                std::_Exit(3);
+            }
+
             std::this_thread::sleep_for(std::chrono::milliseconds(CLIENT_SLEEP_MS));
         }
 
@@ -1144,6 +1282,13 @@ int main(int argc, char* argv[]) {
     }
 
     logger->log(AsyncLogger::INFO, "=== Graceful exit ===");
+
+    // --- Phase 17 & 19: Stop and release v5 subsystems ---
+    if (usb_monitor)     usb_monitor->stop();
+    if (self_protection) self_protection->stop();
+    usb_monitor.reset();
+    self_protection.reset();
+
     logger.reset();
     SSL_CTX_free(ctx);
     cleanup_openssl();
