@@ -1,0 +1,889 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SecureSeaHorse :: Operations Console</title>
+
+<!--
+=================================================================================
+  SecureSeaHorse SIEM -- Phase 25: React Web UI (v5.0)
+=================================================================================
+  A single-file scaffold: React 18 + react-router-dom via ESM CDN. Ships as-is
+  for development / small deployments. For production, run it through Vite:
+
+      npm create vite@latest seahorse-ui -- --template react
+      cp src/webui/index.html seahorse-ui/src/  # then port each <script> block
+      cp src/webui/app.js     seahorse-ui/src/  # into src/App.jsx and src/*.jsx
+
+  Points at the REST API (Phase 7) and the /ws/stream WebSocket that the server
+  exposes once rbac.h is wired in. API token comes from the JWT issued by the
+  /api/auth/login endpoint (Phase 20 RBAC).
+
+  Design language: classified-ops, dark electric blue (#58a6ff), Orbitron for
+  display type, Share Tech Mono for code / telemetry. Kept deliberately close
+  to the embedded dashboard_html.h so operators do not re-learn layouts.
+=================================================================================
+-->
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg-0: #05070d;
+    --bg-1: #0a1220;
+    --bg-2: #0f1a2e;
+    --border: rgba(88, 166, 255, 0.25);
+    --border-strong: rgba(88, 166, 255, 0.55);
+    --text: #d6e2f3;
+    --text-dim: #6b7a93;
+    --accent: #58a6ff;
+    --accent-2: #22d3ee;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --danger: #ff5b5b;
+    --critical: #ff2d55;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body, #root { height: 100%; }
+  body {
+    background: radial-gradient(ellipse at top left, #0c1428 0%, var(--bg-0) 60%) fixed;
+    color: var(--text);
+    font-family: "Share Tech Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+    font-size: 13px;
+    overflow-x: hidden;
+  }
+
+  /* Matrix-rain backdrop */
+  #rain {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    opacity: 0.12;
+  }
+
+  .shell { position: relative; z-index: 1; display: grid; grid-template-columns: 240px 1fr; min-height: 100vh; }
+
+  /* Sidebar */
+  .sidebar {
+    background: linear-gradient(180deg, rgba(15,26,46,0.9), rgba(5,7,13,0.9));
+    border-right: 1px solid var(--border);
+    padding: 20px 14px;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  }
+  .brand {
+    font-family: "Orbitron", sans-serif;
+    font-weight: 900; font-size: 15px; letter-spacing: 2px;
+    color: var(--accent); text-transform: uppercase;
+    padding: 8px 4px 18px; border-bottom: 1px solid var(--border);
+    margin-bottom: 14px;
+  }
+  .brand small { display: block; font-family: "Share Tech Mono"; font-weight: 400; font-size: 10px; color: var(--text-dim); letter-spacing: 3px; margin-top: 4px; }
+  .nav a {
+    display: block; padding: 9px 12px; margin: 2px 0;
+    color: var(--text-dim); text-decoration: none; font-size: 12px;
+    border-left: 2px solid transparent; border-radius: 0 3px 3px 0;
+    transition: all 0.15s;
+  }
+  .nav a:hover { color: var(--text); background: rgba(88,166,255,0.06); }
+  .nav a.active { color: var(--accent); background: rgba(88,166,255,0.1); border-left-color: var(--accent); }
+  .nav-sep { padding: 10px 12px 4px; font-size: 9px; color: var(--text-dim); letter-spacing: 2px; text-transform: uppercase; }
+
+  /* Topbar */
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 24px; border-bottom: 1px solid var(--border);
+    background: rgba(10,18,32,0.6); backdrop-filter: blur(6px);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .topbar h1 { font-family: "Orbitron", sans-serif; font-size: 13px; letter-spacing: 3px; color: var(--text); text-transform: uppercase; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border: 1px solid var(--border); border-radius: 2px;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot-ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot-bad { background: var(--danger); box-shadow: 0 0 6px var(--danger); }
+  .dot-warn { background: var(--warn); box-shadow: 0 0 6px var(--warn); }
+
+  /* Main content */
+  main { padding: 20px 24px 48px; }
+
+  .grid { display: grid; gap: 14px; }
+  .grid-cards { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-bottom: 20px; }
+
+  .card, .panel {
+    background: linear-gradient(180deg, rgba(15,26,46,0.7), rgba(10,18,32,0.7));
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    position: relative; overflow: hidden;
+  }
+  .card::before, .panel::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    opacity: 0.5;
+  }
+  .card { padding: 14px 16px; }
+  .card .label { font-size: 9px; letter-spacing: 2px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 6px; }
+  .card .value { font-family: "Orbitron", sans-serif; font-weight: 700; font-size: 24px; color: var(--text); }
+  .card .sub   { font-size: 10px; color: var(--text-dim); margin-top: 2px; }
+  .card.crit .value  { color: var(--critical); }
+  .card.warn .value  { color: var(--warn); }
+  .card.ok   .value  { color: var(--ok); }
+  .card.info .value  { color: var(--accent); }
+
+  .panel-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid var(--border);
+  }
+  .panel-head h2 { font-family: "Orbitron", sans-serif; font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: var(--text); }
+  .panel-body { padding: 0; max-height: 500px; overflow-y: auto; }
+  .badge {
+    font-size: 9px; padding: 2px 7px; border: 1px solid var(--border); border-radius: 2px;
+    color: var(--text-dim); letter-spacing: 1px;
+  }
+
+  /* Tables */
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { background: rgba(5,7,13,0.8); color: var(--text-dim); font-weight: 400; font-size: 9px; letter-spacing: 1.5px; text-align: left; padding: 8px 12px; text-transform: uppercase; position: sticky; top: 0; }
+  td { padding: 7px 12px; border-top: 1px solid rgba(88,166,255,0.08); color: var(--text); overflow: hidden; text-overflow: ellipsis; max-width: 280px; white-space: nowrap; }
+  tr:hover td { background: rgba(88,166,255,0.05); }
+
+  .sev { font-weight: 700; text-transform: uppercase; font-size: 10px; }
+  .sev-critical { color: var(--critical); }
+  .sev-high { color: var(--warn); }
+  .sev-medium { color: var(--accent); }
+  .sev-low { color: var(--text-dim); }
+
+  .mitre { font-family: "Share Tech Mono"; color: #c49fff; font-size: 11px; }
+  .empty { padding: 50px 20px; text-align: center; color: var(--text-dim); font-size: 11px; }
+
+  /* Login */
+  .login {
+    position: fixed; inset: 0; z-index: 100;
+    background: radial-gradient(ellipse at center, var(--bg-1) 0%, var(--bg-0) 70%);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .login-card {
+    width: 380px; padding: 32px;
+    background: linear-gradient(180deg, rgba(15,26,46,0.95), rgba(10,18,32,0.95));
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    box-shadow: 0 0 40px rgba(88,166,255,0.2);
+  }
+  .login-brand { font-family: "Orbitron", sans-serif; font-weight: 900; font-size: 18px; letter-spacing: 3px; color: var(--accent); text-align: center; margin-bottom: 6px; }
+  .login-sub { text-align: center; color: var(--text-dim); font-size: 10px; letter-spacing: 2px; margin-bottom: 22px; }
+  .field { display: block; margin-bottom: 12px; }
+  .field label { display: block; font-size: 9px; letter-spacing: 2px; color: var(--text-dim); text-transform: uppercase; margin-bottom: 4px; }
+  .field input {
+    width: 100%; padding: 10px 12px; background: var(--bg-0);
+    border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 13px; outline: none; border-radius: 2px;
+  }
+  .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(88,166,255,0.15); }
+  .btn {
+    display: inline-block; padding: 10px 18px; background: transparent;
+    border: 1px solid var(--accent); color: var(--accent);
+    font-family: "Orbitron", sans-serif; font-size: 11px; letter-spacing: 2px;
+    text-transform: uppercase; cursor: pointer; border-radius: 2px;
+    transition: all 0.15s;
+  }
+  .btn:hover { background: rgba(88,166,255,0.1); box-shadow: 0 0 12px rgba(88,166,255,0.3); }
+  .btn.block { width: 100%; }
+  .btn.danger { border-color: var(--danger); color: var(--danger); }
+  .btn.danger:hover { background: rgba(255,91,91,0.1); }
+  .err { color: var(--danger); font-size: 11px; margin-top: 8px; text-align: center; display: none; }
+  .err.show { display: block; }
+
+  /* Live stream */
+  .live-strip {
+    background: rgba(10,18,32,0.85); border: 1px solid var(--border);
+    padding: 8px 14px; margin-bottom: 14px; border-radius: 2px;
+    display: flex; gap: 20px; align-items: center; font-size: 11px;
+  }
+  .live-feed { max-height: 220px; overflow-y: auto; font-size: 11px; }
+  .live-feed .ev {
+    padding: 4px 14px; border-bottom: 1px solid rgba(88,166,255,0.05);
+    display: grid; grid-template-columns: 90px 80px 1fr; gap: 8px;
+  }
+  .live-feed .ev .t { color: var(--text-dim); }
+  .live-feed .ev .s { font-weight: 700; text-transform: uppercase; font-size: 10px; }
+
+  /* Incident workflow */
+  .incident-header { display: flex; justify-content: space-between; align-items: flex-start; padding: 16px; border-bottom: 1px solid var(--border); }
+  .incident-title { font-family: "Orbitron", sans-serif; font-size: 14px; letter-spacing: 2px; color: var(--text); text-transform: uppercase; margin-bottom: 4px; }
+  .incident-meta  { color: var(--text-dim); font-size: 11px; }
+  .status-chips { display: flex; gap: 8px; }
+  .chip { padding: 4px 10px; border: 1px solid var(--border); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; border-radius: 2px; cursor: pointer; }
+  .chip.active { background: var(--accent); color: var(--bg-0); border-color: var(--accent); }
+
+  .actions { padding: 14px 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+  .timeline { padding: 16px; }
+  .tl-event { padding: 10px 14px; border-left: 2px solid var(--border); margin-bottom: 8px; background: rgba(5,7,13,0.5); }
+  .tl-event .when { font-size: 10px; color: var(--text-dim); letter-spacing: 1px; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg-0); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+</style>
+</head>
+<body>
+
+<canvas id="rain"></canvas>
+<div id="root"></div>
+
+<!-- Matrix rain (non-blocking, tiny) -->
+<script>
+(function () {
+  const c = document.getElementById('rain');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  let w, h, cols, drops;
+  const glyphs = '01ABCDEF+*#$%&';
+  function resize() {
+    w = c.width = window.innerWidth;
+    h = c.height = window.innerHeight;
+    cols = Math.floor(w / 14);
+    drops = Array(cols).fill(1);
+  }
+  function draw() {
+    ctx.fillStyle = 'rgba(5,7,13,0.08)';
+    ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = '#58a6ff';
+    ctx.font = '12px "Share Tech Mono"';
+    for (let i = 0; i < cols; i++) {
+      const g = glyphs[Math.floor(Math.random() * glyphs.length)];
+      ctx.fillText(g, i * 14, drops[i] * 14);
+      if (drops[i] * 14 > h && Math.random() > 0.975) drops[i] = 0;
+      drops[i]++;
+    }
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  setInterval(draw, 66);
+})();
+</script>
+
+<!-- React + Router via ESM -->
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "react-router-dom": "https://esm.sh/react-router-dom@6.26.2?deps=react@18.3.1"
+  }
+}
+</script>
+
+<script type="module">
+import React, { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } from 'react';
+import { createRoot } from 'react-dom/client';
+import {
+  HashRouter, Routes, Route, NavLink, Link, useNavigate, useParams
+} from 'react-router-dom';
+
+const e = React.createElement;
+
+// ---------------------------------------------------------------------------
+// API client
+// ---------------------------------------------------------------------------
+const API_BASE = window.location.origin;
+const TOKEN_KEY = 'seahorse_token';
+
+function apiFetch(path, opts = {}) {
+  const token = localStorage.getItem(TOKEN_KEY) || '';
+  const headers = Object.assign(
+    { 'Content-Type': 'application/json' },
+    token ? { 'Authorization': 'Bearer ' + token } : {},
+    opts.headers || {}
+  );
+  return fetch(API_BASE + path, Object.assign({}, opts, { headers })).then(r => {
+    if (r.status === 401) {
+      localStorage.removeItem(TOKEN_KEY);
+      window.location.hash = '#/login';
+      throw new Error('unauthorized');
+    }
+    if (!r.ok) throw new Error('http ' + r.status);
+    return r.json();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Auth context (Phase 20 RBAC integration: role flows through here too)
+// ---------------------------------------------------------------------------
+const AuthCtx = createContext(null);
+function useAuth() { return useContext(AuthCtx); }
+
+function AuthProvider({ children }) {
+  const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || '');
+  const [user, setUser]   = useState(null);
+
+  useEffect(() => {
+    if (!token) { setUser(null); return; }
+    apiFetch('/api/auth/me')
+      .then(setUser)
+      .catch(() => { setUser({ username: 'operator', role: 'analyst' }); });
+  }, [token]);
+
+  const login = useCallback(async (username, password) => {
+    // Phase 20 RBAC: /api/auth/login returns { token, role, tenant }
+    // If the endpoint does not exist yet (pre-Phase 20 server), fall back to
+    // a static token login where the user types the token into the username box.
+    try {
+      const res = await fetch(API_BASE + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        localStorage.setItem(TOKEN_KEY, data.token);
+        setToken(data.token);
+        setUser({ username: data.username || username, role: data.role || 'analyst' });
+        return;
+      }
+    } catch (_) {}
+    // Legacy bearer-token fallback -- username field is the token, password ignored
+    localStorage.setItem(TOKEN_KEY, username);
+    setToken(username);
+    setUser({ username: 'operator', role: 'admin' });
+  }, []);
+
+  const logout = useCallback(() => {
+    localStorage.removeItem(TOKEN_KEY);
+    setToken('');
+    setUser(null);
+  }, []);
+
+  return e(AuthCtx.Provider, { value: { token, user, login, logout } }, children);
+}
+
+// ---------------------------------------------------------------------------
+// Login page
+// ---------------------------------------------------------------------------
+function LoginPage() {
+  const { login } = useAuth();
+  const nav = useNavigate();
+  const [u, setU] = useState('');
+  const [p, setP] = useState('');
+  const [err, setErr] = useState('');
+
+  async function submit(ev) {
+    ev.preventDefault();
+    setErr('');
+    try { await login(u, p); nav('/'); }
+    catch (x) { setErr('Authentication failed'); }
+  }
+
+  return e('div', { className: 'login' },
+    e('form', { className: 'login-card', onSubmit: submit },
+      e('div', { className: 'login-brand' }, 'SecureSeaHorse'),
+      e('div', { className: 'login-sub' }, 'Operations Console // v5.0'),
+      e('div', { className: 'field' },
+        e('label', null, 'Username or Token'),
+        e('input', { type: 'text', value: u, onChange: ev => setU(ev.target.value), autoFocus: true })
+      ),
+      e('div', { className: 'field' },
+        e('label', null, 'Password'),
+        e('input', { type: 'password', value: p, onChange: ev => setP(ev.target.value) })
+      ),
+      e('button', { className: 'btn block', type: 'submit' }, 'Authenticate'),
+      e('div', { className: 'err ' + (err ? 'show' : '') }, err)
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar + layout
+// ---------------------------------------------------------------------------
+function Sidebar() {
+  const { user, logout } = useAuth();
+  const item = (to, label) => e(NavLink, {
+    to, end: to === '/',
+    className: ({ isActive }) => isActive ? 'active' : ''
+  }, label);
+
+  return e('aside', { className: 'sidebar' },
+    e('div', { className: 'brand' }, 'SeaHorse', e('small', null, 'CLASSIFIED OPS')),
+    e('nav', { className: 'nav' },
+      e('div', { className: 'nav-sep' }, 'Overview'),
+      item('/', '// Dashboard'),
+      item('/fleet', '// Fleet'),
+      e('div', { className: 'nav-sep' }, 'Detections'),
+      item('/threats', '// Threats'),
+      item('/ioc', '// IoC Hits'),
+      item('/fim', '// FIM Events'),
+      item('/correlations', '// Correlations'),
+      item('/anomalies', '// ML Anomalies'),
+      e('div', { className: 'nav-sep' }, 'Workflow'),
+      item('/incidents', '// Incidents'),
+      item('/hunt', '// Hunt'),
+      item('/reports', '// Reports'),
+      e('div', { className: 'nav-sep' }, 'Session'),
+      e('div', { style: { padding: '8px 12px', fontSize: 10, color: 'var(--text-dim)' } },
+        user ? `${user.username} [${user.role}]` : 'anonymous'),
+      e('button', { className: 'btn danger', style: { width: '100%', marginTop: 6 }, onClick: logout }, 'Sign Out')
+    )
+  );
+}
+
+function Topbar({ title, children }) {
+  const [status, setStatus] = useState({ ok: true, text: 'LINKED' });
+  useEffect(() => {
+    let cancelled = false;
+    const ping = () => apiFetch('/api/stats')
+      .then(() => !cancelled && setStatus({ ok: true, text: 'LINKED' }))
+      .catch(() => !cancelled && setStatus({ ok: false, text: 'DEGRADED' }));
+    ping();
+    const id = setInterval(ping, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  return e('div', { className: 'topbar' },
+    e('h1', null, title),
+    e('div', { style: { display: 'flex', gap: 10, alignItems: 'center' } },
+      children,
+      e('div', { className: 'status-pill' },
+        e('span', { className: 'dot ' + (status.ok ? 'dot-ok' : 'dot-bad') }),
+        status.text)
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Live stream hook -- Phase 25 WebSocket
+// ---------------------------------------------------------------------------
+function useLiveStream(maxItems = 60) {
+  const [events, setEvents] = useState([]);
+  const [connected, setConnected] = useState(false);
+  useEffect(() => {
+    const token = localStorage.getItem(TOKEN_KEY) || '';
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/ws/stream?token=${encodeURIComponent(token)}`;
+    let ws, killed = false, retry;
+
+    function open() {
+      try { ws = new WebSocket(url); }
+      catch (_) { setConnected(false); return; }
+      ws.onopen  = () => setConnected(true);
+      ws.onclose = () => {
+        setConnected(false);
+        if (!killed) retry = setTimeout(open, 3000);
+      };
+      ws.onmessage = ev => {
+        try {
+          const msg = JSON.parse(ev.data);
+          setEvents(prev => [msg, ...prev].slice(0, maxItems));
+        } catch (_) {}
+      };
+    }
+    open();
+    return () => { killed = true; clearTimeout(retry); if (ws) ws.close(); };
+  }, [maxItems]);
+  return { events, connected };
+}
+
+// ---------------------------------------------------------------------------
+// Dashboard
+// ---------------------------------------------------------------------------
+function Dashboard() {
+  const [stats, setStats] = useState(null);
+  const live = useLiveStream(40);
+
+  useEffect(() => {
+    const tick = () => apiFetch('/api/stats').then(setStats).catch(() => {});
+    tick();
+    const id = setInterval(tick, 15000);
+    return () => clearInterval(id);
+  }, []);
+
+  const s = stats || {};
+  const card = (kind, label, value, sub) => e('div', { className: 'card ' + kind },
+    e('div', { className: 'label' }, label),
+    e('div', { className: 'value' }, value),
+    e('div', { className: 'sub' }, sub || '\u00A0')
+  );
+
+  return e(React.Fragment, null,
+    e(Topbar, { title: 'Dashboard' }),
+    e('main', null,
+      e('div', { className: 'live-strip' },
+        e('span', { className: 'dot ' + (live.connected ? 'dot-ok' : 'dot-warn') }),
+        e('span', null, 'Live stream: ' + (live.connected ? 'active' : 'reconnecting')),
+        e('span', { style: { color: 'var(--text-dim)' } }, live.events.length + ' events buffered')
+      ),
+      e('div', { className: 'grid grid-cards' },
+        card('info', 'Fleet Online', `${s.fleet_online ?? 0} / ${s.fleet_total ?? 0}`, 'endpoints linked'),
+        card((s.total_threats ?? 0) > 0 ? 'crit' : 'ok', 'Threats', s.total_threats ?? 0, 'detections'),
+        card((s.total_ioc_hits ?? 0) > 0 ? 'warn' : 'ok', 'IoC Hits', s.total_ioc_hits ?? 0, 'feed matches'),
+        card((s.total_fim_changes ?? 0) > 0 ? 'warn' : 'ok', 'FIM Changes', s.total_fim_changes ?? 0, 'files touched'),
+        card((s.ir_blocked_ips ?? 0) > 0 ? 'warn' : 'ok', 'Blocked IPs', s.ir_blocked_ips ?? 0, `${s.ir_quarantined ?? 0} quarantined`),
+        card('info', 'Correlations', s.corr_active ?? 0, `${s.corr_incidents ?? 0} total`),
+        card('info', 'Uptime', `${s.uptime_hours ?? 0}h`, `${s.api_requests ?? 0} API calls`),
+        card('info', 'ML Anomalies', s.ml_findings ?? 0, 'isolation forest')
+      ),
+      e('div', { className: 'panel' },
+        e('div', { className: 'panel-head' },
+          e('h2', null, 'Live Event Stream'),
+          e('span', { className: 'badge' }, live.events.length)),
+        e('div', { className: 'panel-body live-feed' },
+          live.events.length === 0
+            ? e('div', { className: 'empty' }, 'Awaiting events...')
+            : live.events.map((ev, i) => e('div', { key: i, className: 'ev' },
+                e('span', { className: 't' }, new Date(ev.ts || Date.now()).toLocaleTimeString()),
+                e('span', { className: 's sev-' + (ev.severity || 'low') }, ev.severity || 'info'),
+                e('span', null, `${ev.source || '?'} :: ${ev.description || ev.category || 'event'}`)
+              ))
+        )
+      )
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Generic table view (Threats / IoC / FIM / Correlations / Anomalies)
+// ---------------------------------------------------------------------------
+function TableView({ title, endpoint, columns }) {
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    const tick = () => apiFetch(endpoint + '?limit=100').then(setRows).catch(() => setRows([]));
+    tick();
+    const id = setInterval(tick, 15000);
+    return () => clearInterval(id);
+  }, [endpoint]);
+  return e(React.Fragment, null,
+    e(Topbar, { title }),
+    e('main', null,
+      e('div', { className: 'panel' },
+        e('div', { className: 'panel-head' },
+          e('h2', null, title),
+          e('span', { className: 'badge' }, rows.length)),
+        e('div', { className: 'panel-body' },
+          rows.length === 0
+            ? e('div', { className: 'empty' }, 'No records')
+            : e('table', null,
+                e('thead', null, e('tr', null, columns.map(c => e('th', { key: c.key }, c.label)))),
+                e('tbody', null, rows.map((r, i) =>
+                  e('tr', { key: i }, columns.map(c => e('td', {
+                    key: c.key,
+                    className: c.cls ? c.cls(r) : '',
+                    title: r[c.key]
+                  }, c.render ? c.render(r) : (r[c.key] ?? '-')))))
+                )
+              )
+        )
+      )
+    )
+  );
+}
+
+const ThreatsView = () => e(TableView, {
+  title: 'Threats', endpoint: '/api/threats',
+  columns: [
+    { key: 'timestamp_ms', label: 'Time', render: r => new Date(+r.timestamp_ms).toLocaleString() },
+    { key: 'device_id', label: 'Device' },
+    { key: 'category', label: 'Category' },
+    { key: 'severity', label: 'Severity', cls: r => 'sev sev-' + r.severity },
+    { key: 'mitre_id', label: 'MITRE', cls: () => 'mitre' },
+    { key: 'description', label: 'Description' }
+  ]
+});
+
+const IocView = () => e(TableView, {
+  title: 'IoC Hits', endpoint: '/api/ioc',
+  columns: [
+    { key: 'timestamp_ms', label: 'Time', render: r => new Date(+r.timestamp_ms).toLocaleString() },
+    { key: 'device_id', label: 'Device' },
+    { key: 'ioc_type', label: 'Type' },
+    { key: 'ioc_value', label: 'Indicator' },
+    { key: 'severity', label: 'Severity', cls: r => 'sev sev-' + r.severity },
+    { key: 'feed_source', label: 'Feed' }
+  ]
+});
+
+const FimView = () => e(TableView, {
+  title: 'FIM Events', endpoint: '/api/fim',
+  columns: [
+    { key: 'timestamp_ms', label: 'Time', render: r => new Date(+r.timestamp_ms).toLocaleString() },
+    { key: 'device_id', label: 'Device' },
+    { key: 'change_type', label: 'Change' },
+    { key: 'file_path', label: 'Path' },
+    { key: 'severity', label: 'Severity', cls: r => 'sev sev-' + r.severity },
+    { key: 'mitre_id', label: 'MITRE', cls: () => 'mitre' }
+  ]
+});
+
+const AnomaliesView = () => e(TableView, {
+  title: 'ML Anomalies', endpoint: '/api/anomalies',
+  columns: [
+    { key: 'timestamp_ms', label: 'Time', render: r => new Date(+r.timestamp_ms).toLocaleString() },
+    { key: 'device_id', label: 'Device' },
+    { key: 'detector', label: 'Detector' },
+    { key: 'score', label: 'Score', render: r => Number(r.score).toFixed(3) },
+    { key: 'severity', label: 'Severity', cls: r => 'sev sev-' + r.severity },
+    { key: 'description', label: 'Description' }
+  ]
+});
+
+const FleetView = () => e(TableView, {
+  title: 'Fleet', endpoint: '/api/devices',
+  columns: [
+    { key: 'device_id', label: 'ID' },
+    { key: 'hostname', label: 'Hostname' },
+    { key: 'machine_ip', label: 'IP' },
+    { key: 'os_name', label: 'OS' },
+    { key: 'status', label: 'Status', cls: r => 'sev sev-' + (r.status === 'online' ? 'low' : r.status === 'stale' ? 'medium' : 'high') },
+    { key: 'health_score', label: 'Health' },
+    { key: 'agent_version', label: 'Agent' }
+  ]
+});
+
+// ---------------------------------------------------------------------------
+// Incidents: list + workflow detail
+// ---------------------------------------------------------------------------
+function IncidentsList() {
+  const [rows, setRows] = useState([]);
+  useEffect(() => {
+    apiFetch('/api/correlations?limit=100').then(setRows).catch(() => setRows([]));
+  }, []);
+
+  return e(React.Fragment, null,
+    e(Topbar, { title: 'Incidents' }),
+    e('main', null,
+      e('div', { className: 'panel' },
+        e('div', { className: 'panel-head' },
+          e('h2', null, 'Correlated Incidents'),
+          e('span', { className: 'badge' }, rows.length)),
+        e('div', { className: 'panel-body' },
+          rows.length === 0
+            ? e('div', { className: 'empty' }, 'No incidents')
+            : e('table', null,
+                e('thead', null, e('tr', null,
+                  ['ID', 'Rule', 'Severity', 'Devices', 'Events', 'First Seen', ''].map(h => e('th', { key: h }, h)))),
+                e('tbody', null, rows.map(r => e('tr', { key: r.incident_id },
+                  e('td', null, r.incident_id),
+                  e('td', null, r.rule_name),
+                  e('td', { className: 'sev sev-' + r.severity }, r.severity),
+                  e('td', null, r.device_count),
+                  e('td', null, r.event_count),
+                  e('td', null, new Date(+r.first_seen_ms).toLocaleString()),
+                  e('td', null, e(Link, { to: '/incidents/' + r.incident_id, className: 'btn' }, 'Open'))
+                )))
+              )
+        )
+      )
+    )
+  );
+}
+
+function IncidentDetail() {
+  const { id } = useParams();
+  const [inc, setInc] = useState(null);
+  const [status, setStatus] = useState('open');
+  const [notes, setNotes] = useState('');
+
+  useEffect(() => {
+    apiFetch('/api/correlations?limit=500')
+      .then(rows => setInc(rows.find(x => String(x.incident_id) === String(id)) || null))
+      .catch(() => {});
+  }, [id]);
+
+  const act = (action) => {
+    apiFetch('/api/incidents/' + id + '/' + action, { method: 'POST', body: JSON.stringify({ notes }) })
+      .then(() => setStatus(action))
+      .catch(() => alert('Action failed -- endpoint may not be wired yet'));
+  };
+
+  if (!inc) return e(React.Fragment, null,
+    e(Topbar, { title: 'Incident ' + id }),
+    e('main', null, e('div', { className: 'empty' }, 'Loading or not found...'))
+  );
+
+  return e(React.Fragment, null,
+    e(Topbar, { title: 'Incident ' + id }),
+    e('main', null,
+      e('div', { className: 'panel' },
+        e('div', { className: 'incident-header' },
+          e('div', null,
+            e('div', { className: 'incident-title' }, inc.rule_name),
+            e('div', { className: 'incident-meta' },
+              `${inc.severity.toUpperCase()} // ${inc.mitre_technique || ''} // devices=${inc.device_count} // events=${inc.event_count}`)
+          ),
+          e('div', { className: 'status-chips' },
+            ['open', 'acknowledged', 'contained', 'resolved'].map(s =>
+              e('div', {
+                key: s,
+                className: 'chip ' + (status === s ? 'active' : ''),
+                onClick: () => setStatus(s)
+              }, s))
+          )
+        ),
+        e('div', { className: 'actions' },
+          e('button', { className: 'btn', onClick: () => act('acknowledge') }, 'Acknowledge'),
+          e('button', { className: 'btn', onClick: () => act('block') }, 'Block All Source IPs'),
+          e('button', { className: 'btn', onClick: () => act('quarantine') }, 'Quarantine Devices'),
+          e('button', { className: 'btn', onClick: () => act('resolve') }, 'Resolve')
+        ),
+        e('div', { className: 'timeline' },
+          e('h3', { style: { fontFamily: '"Orbitron"', fontSize: 11, letterSpacing: 2, textTransform: 'uppercase', color: 'var(--text-dim)', marginBottom: 10 } }, 'Timeline'),
+          e('div', { className: 'tl-event' },
+            e('div', { className: 'when' }, new Date(+inc.first_seen_ms).toLocaleString()),
+            e('div', null, inc.description)
+          ),
+          e('div', { className: 'tl-event' },
+            e('div', { className: 'when' }, new Date(+inc.last_seen_ms).toLocaleString()),
+            e('div', null, 'Last related event observed')
+          )
+        ),
+        e('div', { style: { padding: 16, borderTop: '1px solid var(--border)' } },
+          e('label', { style: { display: 'block', fontSize: 9, letterSpacing: 2, color: 'var(--text-dim)', marginBottom: 6, textTransform: 'uppercase' } }, 'Analyst Notes'),
+          e('textarea', {
+            rows: 4,
+            value: notes,
+            onChange: ev => setNotes(ev.target.value),
+            style: { width: '100%', padding: 10, background: 'var(--bg-0)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 12, outline: 'none', borderRadius: 2 }
+          })
+        )
+      )
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Hunt view -- Phase 23 DSL integration
+// ---------------------------------------------------------------------------
+function HuntView() {
+  const [q, setQ] = useState('search events | where severity ~ "high" | sort timestamp_ms desc | limit 50');
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState('');
+
+  const run = () => {
+    setErr('');
+    apiFetch('/api/hunt', { method: 'POST', body: JSON.stringify({ query: q }) })
+      .then(setRows)
+      .catch(x => setErr(String(x.message || x)));
+  };
+
+  return e(React.Fragment, null,
+    e(Topbar, { title: 'Threat Hunting' }),
+    e('main', null,
+      e('div', { className: 'panel' },
+        e('div', { className: 'panel-head' }, e('h2', null, 'SPL-Style Query')),
+        e('div', { style: { padding: 14 } },
+          e('textarea', {
+            rows: 3, value: q, onChange: ev => setQ(ev.target.value),
+            style: { width: '100%', padding: 10, background: 'var(--bg-0)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 12, outline: 'none', borderRadius: 2 }
+          }),
+          e('div', { style: { marginTop: 10, display: 'flex', gap: 10 } },
+            e('button', { className: 'btn', onClick: run }, 'Execute'),
+            err && e('span', { style: { color: 'var(--danger)', fontSize: 11 } }, err)
+          )
+        )
+      ),
+      e('div', { className: 'panel', style: { marginTop: 14 } },
+        e('div', { className: 'panel-head' },
+          e('h2', null, 'Results'),
+          e('span', { className: 'badge' }, rows.length)),
+        e('div', { className: 'panel-body' },
+          rows.length === 0
+            ? e('div', { className: 'empty' }, 'Run a query above')
+            : e('table', null,
+                e('thead', null, e('tr', null, Object.keys(rows[0] || {}).map(k => e('th', { key: k }, k)))),
+                e('tbody', null, rows.map((r, i) =>
+                  e('tr', { key: i }, Object.keys(rows[0] || {}).map(k => e('td', { key: k }, String(r[k] ?? ''))))
+                ))
+              )
+        )
+      )
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reports view -- Phase 18
+// ---------------------------------------------------------------------------
+function ReportsView() {
+  const [framework, setFramework] = useState('pci');
+  const [last, setLast] = useState(null);
+
+  const generate = () => {
+    apiFetch('/api/reports/generate', { method: 'POST', body: JSON.stringify({ framework }) })
+      .then(setLast)
+      .catch(() => alert('Report generation failed'));
+  };
+
+  return e(React.Fragment, null,
+    e(Topbar, { title: 'Reports' }),
+    e('main', null,
+      e('div', { className: 'panel' },
+        e('div', { className: 'panel-head' }, e('h2', null, 'Generate Compliance Report')),
+        e('div', { style: { padding: 16, display: 'flex', gap: 10, alignItems: 'center' } },
+          e('select', {
+            value: framework,
+            onChange: ev => setFramework(ev.target.value),
+            style: { padding: 10, background: 'var(--bg-0)', border: '1px solid var(--border)', color: 'var(--text)', fontFamily: 'inherit', fontSize: 12, outline: 'none', borderRadius: 2 }
+          },
+            e('option', { value: 'pci' }, 'PCI-DSS'),
+            e('option', { value: 'hipaa' }, 'HIPAA'),
+            e('option', { value: 'soc2' }, 'SOC 2'),
+            e('option', { value: 'iso27001' }, 'ISO 27001'),
+            e('option', { value: 'generic' }, 'Generic Operations')
+          ),
+          e('button', { className: 'btn', onClick: generate }, 'Generate')
+        ),
+        last && e('div', { style: { padding: 16, borderTop: '1px solid var(--border)', color: 'var(--text-dim)', fontSize: 11 } },
+          'Saved: ', e('a', { href: last.url, target: '_blank', style: { color: 'var(--accent)' } }, last.path || last.url))
+      )
+    )
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App shell
+// ---------------------------------------------------------------------------
+function Shell() {
+  const { token } = useAuth();
+  if (!token) return e(LoginPage);
+  return e('div', { className: 'shell' },
+    e(Sidebar),
+    e('div', { style: { minWidth: 0 } },
+      e(Routes, null,
+        e(Route, { path: '/', element: e(Dashboard) }),
+        e(Route, { path: '/fleet', element: e(FleetView) }),
+        e(Route, { path: '/threats', element: e(ThreatsView) }),
+        e(Route, { path: '/ioc', element: e(IocView) }),
+        e(Route, { path: '/fim', element: e(FimView) }),
+        e(Route, { path: '/correlations', element: e(TableView, {
+          title: 'Correlations', endpoint: '/api/correlations',
+          columns: [
+            { key: 'incident_id', label: 'ID' },
+            { key: 'rule_name', label: 'Rule' },
+            { key: 'severity', label: 'Severity', cls: r => 'sev sev-' + r.severity },
+            { key: 'device_count', label: 'Devices' },
+            { key: 'event_count', label: 'Events' },
+            { key: 'first_seen_ms', label: 'First Seen', render: r => new Date(+r.first_seen_ms).toLocaleString() }
+          ]
+        }) }),
+        e(Route, { path: '/anomalies', element: e(AnomaliesView) }),
+        e(Route, { path: '/incidents', element: e(IncidentsList) }),
+        e(Route, { path: '/incidents/:id', element: e(IncidentDetail) }),
+        e(Route, { path: '/hunt', element: e(HuntView) }),
+        e(Route, { path: '/reports', element: e(ReportsView) }),
+        e(Route, { path: '/login', element: e(LoginPage) }),
+        e(Route, { path: '*', element: e('main', null, e('div', { className: 'empty' }, '404 -- Not found')) })
+      )
+    )
+  );
+}
+
+function App() {
+  return e(HashRouter, null, e(AuthProvider, null, e(Shell)));
+}
+
+createRoot(document.getElementById('root')).render(e(App));
+</script>
+</body>
+</html>

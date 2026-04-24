@@ -50,6 +50,27 @@ rest_token_*.txt
 scripts/*.sh
 scripts/*.bat
 scripts/*.ps1
+# ...but keep shipped scripts
+!scripts/generate_certs.sh
 
 # Phase 9: Fleet snapshots (generated at runtime)
 fleet_snapshot_*.json
+
+# Phase 16: Sigma rules (user-supplied, keep shipped rules)
+# config/sigma_rules/custom_*.yml
+
+# Phase 17: Agent self-protection
+agent_baseline.json
+update_staging/
+
+# Phase 18: Generated compliance reports
+reports/*.pdf
+reports/*.html
+
+# Phase 20: Tenant and user databases (created at runtime)
+users.db
+tenants.db
+*.jwt
+
+# Phase 24: ML model persistence (generated at runtime)
+ml_models/
