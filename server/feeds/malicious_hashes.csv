@@ -1,0 +1,28 @@
+# =============================================================================
+# SecureSeaHorse SIEM — Sample Threat Intelligence Feed: Malicious Hashes
+# =============================================================================
+# Format: type | value | severity | description | mitre_id | tags
+# Supports MD5 (32 char), SHA1 (40 char), SHA256 (64 char)
+# =============================================================================
+
+# --- Known Malware Hashes (SHA256) ---
+hash | 7b2e5f0c8a1d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f | critical | WannaCry ransomware sample          | T1486     | ransomware,wannacry
+hash | a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2 | critical | NotPetya wiper malware              | T1485     | wiper,notpetya
+hash | deadbeef0123456789abcdef0123456789abcdef0123456789abcdef01234567   | critical | Cobalt Strike beacon payload        | T1059.003 | cobaltstrike,beacon
+hash | cafebabe9876543210fedcba9876543210fedcba9876543210fedcba98765432   | high     | Mimikatz credential dumper          | T1003.001 | credential_dump,mimikatz
+
+# --- Known Malware Hashes (SHA1) ---
+hash | da39a3ee5e6b4b0d3255bfef95601890afd80709 | high     | Known trojan dropper SHA1           | T1204.002 | trojan,dropper
+hash | 5baa61e4c9b93f3f0682250b6cf8331b7ee68fd8 | medium   | Suspicious binary (password hash)   | T1003     | suspicious,hash
+
+# --- Known Malware Hashes (MD5) ---
+hash | d41d8cd98f00b204e9800998ecf8427e | medium   | Empty file hash (staging indicator) | T1074     | staging,empty
+hash | 098f6bcd4621d373cade4e832627b4f6 | high     | Known RAT payload MD5               | T1219     | rat,remote_access
+
+# --- Webshell Hashes ---
+hash | 1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b | critical | China Chopper webshell              | T1505.003 | webshell,china_chopper
+hash | 2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c | critical | WSO webshell variant                | T1505.003 | webshell,wso
+
+# --- Cryptominer Binaries ---
+hash | 3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d | high     | XMRig cryptominer binary            | T1496     | cryptominer,xmrig
+hash | 4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e | high     | Custom Monero miner                 | T1496     | cryptominer,monero

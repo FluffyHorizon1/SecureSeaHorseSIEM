@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "comment": "Signed-update manifest served at /api/updates. Each artifact is RSA-PSS SHA-256 signed by the same CA that signed the TLS certs. The agent validates the signature before swapping binaries.",
+  "latest": {
+    "linux-x86_64":   "5.0.0",
+    "linux-arm64":    "5.0.0",
+    "windows-x86_64": "5.0.0"
+  },
+  "artifacts": [
+    {
+      "version":        "5.0.0",
+      "platform":       "linux-x86_64",
+      "file":           "updates/linux-x86_64/SeaHorseClient-5.0.0",
+      "size_bytes":     0,
+      "sha256_hex":     "<fill-at-release-time>",
+      "signature_b64":  "<fill-at-release-time>",
+      "release_notes":  "See CHANGELOG.md entry for 5.0.0"
+    },
+    {
+      "version":        "5.0.0",
+      "platform":       "windows-x86_64",
+      "file":           "updates/windows-x86_64/SeaHorseClient-5.0.0.exe",
+      "size_bytes":     0,
+      "sha256_hex":     "<fill-at-release-time>",
+      "signature_b64":  "<fill-at-release-time>",
+      "release_notes":  "See CHANGELOG.md entry for 5.0.0"
+    }
+  ]
+}

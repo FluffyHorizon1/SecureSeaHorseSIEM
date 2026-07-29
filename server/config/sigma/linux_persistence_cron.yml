@@ -1,0 +1,21 @@
+title: Suspicious Cron Job Persistence
+id: 8c0d99de-1b4f-4c88-9f36-9aa2e3c7ab11
+status: stable
+description: Detects cron-based persistence — anonymous /tmp-rooted scripts
+  scheduled through crontab or a drop-in under /etc/cron.d.
+level: medium
+logsource:
+  product: linux
+  service: auditd
+detection:
+  selection:
+    - "crontab -e"
+    - "echo '* * * * *"
+    - "/etc/cron.d/"
+    - "/var/spool/cron/crontabs/"
+  condition: selection
+tags:
+  - attack.t1053.003
+  - attack.persistence
+falsepositives:
+  - System package installs that drop into /etc/cron.d
