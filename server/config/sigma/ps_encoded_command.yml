@@ -1,0 +1,22 @@
+title: Suspicious PowerShell Encoded Command
+id: 6c5d7c7b-5a8f-4a37-9dfa-5c9d45e8b6b7
+status: stable
+description: Detects the use of PowerShell with the -EncodedCommand switch, a
+  very common obfuscation technique used by droppers and living-off-the-land
+  attackers.
+level: high
+logsource:
+  product: windows
+  service: sysmon
+detection:
+  selection:
+    - "powershell.exe -enc"
+    - "powershell.exe -EncodedCommand"
+    - "pwsh.exe -enc"
+    - "pwsh.exe -EncodedCommand"
+  condition: selection
+tags:
+  - attack.t1059.001
+  - attack.execution
+falsepositives:
+  - Legitimate sysadmin scripts that base64-encode arguments
