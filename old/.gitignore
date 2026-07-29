@@ -1,0 +1,55 @@
+# Build directories
+build/
+out/
+bin/
+.vs/
+.vscode/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+
+# Compiled Binaries
+*.exe
+*.dll
+*.lib
+*.so
+*.a
+*.o
+*.obj
+
+# Logs and Data
+*.log
+*.csv
+
+# Security - NEVER UPLOAD KEYS
+*.crt
+*.key
+*.csr
+*.pem
+*.srl
+
+# Vcpkg local installs
+vcpkg_installed/
+
+# Phase 2: Database credentials (if stored locally)
+*.pgpass
+
+# Phase 5: Threat intel feeds — KEEP sample feeds, ignore downloaded/custom feeds
+# Uncomment the line below if you download large third-party feed files locally:
+# config/feeds/custom_*.csv
+
+# Phase 6: FIM baseline snapshots (generated at runtime, not version-controlled)
+fim_baseline_*.json
+
+# Phase 7: REST API token backups
+rest_token_*.txt
+
+# Phase 8: Incident response scripts (user-supplied)
+scripts/*.sh
+scripts/*.bat
+scripts/*.ps1
+
+# Phase 9: Fleet snapshots (generated at runtime)
+fleet_snapshot_*.json

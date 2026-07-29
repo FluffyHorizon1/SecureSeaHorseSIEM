@@ -1,0 +1,17 @@
+# SecureSeaHorse USB/Peripheral Whitelist (Phase 19 / v4.0.0)
+# Lines starting with # are comments. Blank lines allowed.
+# Format: vid | pid | serial | tenant_id | note
+#   vid/pid   - 4-hex (lowercase). Required.
+#   serial    - device serial or "*" wildcard
+#   tenant_id - leave blank for global scope
+#   note      - free-text audit trail
+#
+# Approved corporate YubiKey
+1050 | 0407 | *              |   | YubiKey 5 NFC (HR-issued)
+#
+# Approved Logitech keyboard/mouse receivers
+046d | c52b | *              |   | Logitech Unifying receiver
+046d | c53f | *              |   | Logitech Bolt receiver
+#
+# Example per-tenant entry
+# 0951 | 1666 | 1C6F65D70B000D | acme-corp | Kingston DataTraveler in finance-vault

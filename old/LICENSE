@@ -4,7 +4,7 @@
 Version 3.1 | Effective Date: April 22, 2026
 Copyright (c) 2024-2026 Secured Cyber Solutions Limited. All rights reserved.
 
-This Agreement governs the use of SecureSeaHorse SIEM v3.1.2 and all earlier
+This Agreement governs the use of SecureSeaHorse SIEM v3.1.4 and all earlier
 versions. It supersedes Version 1.0 (February 10, 2026) in its entirety.
 
 -------------------------------------------------------------------------------
@@ -259,7 +259,7 @@ THE USE OR OTHER DEALINGS IN THE SOFTWARE, INCLUDING BUT NOT LIMITED TO:
 To the maximum extent permitted by law, the total aggregate liability of
 Secured Cyber Solutions Limited under this Agreement shall not exceed the
 fees paid by the Authorized User for the Software in the twelve (12) months
-preceding the claim, or GBP 100, whichever is greater.
+preceding the claim, or GBP 25,000, whichever is greater.
 
 -------------------------------------------------------------------------------
 10. EXPORT CONTROL
@@ -299,12 +299,13 @@ Upon termination:
 12. UPDATES & SUPPORT
 -------------------------------------------------------------------------------
 This Agreement covers the version of the Software to which it is
-distributed (v3.1.1) and any prior versions. Future releases may be
+distributed (v3.1.4) and any prior versions. Future releases may be
 governed by separate terms.
 
 Nothing in this Agreement obligates Secured Cyber Solutions Limited to
 provide updates, patches, bug fixes, or technical support. Security fixes
-such as those introduced in v3.1.1 are provided on a best-effort basis.
+such as those introduced in v3.1.1, and the subsequent stability patches
+through v3.1.4, are provided on a best-effort basis.
 
 -------------------------------------------------------------------------------
 13. GOVERNING LAW
@@ -346,10 +347,10 @@ For licensing inquiries, responsible security disclosures, or requests to
 use the Software in a manner not covered by this Agreement, please contact:
 
     Secured Cyber Solutions Limited
-    legal@securedcyber.solutions    (licensing & commercial)
-    security@securedcyber.solutions (responsible disclosure, PGP preferred)
+    legal@sc-solutions.co.uk    (licensing & commercial)
+    security@sc-solutions.co.uk (responsible disclosure, PGP preferred)
 
 ===============================================================================
                             END OF AGREEMENT
-                  SecureSeaHorse SIEM v3.1.2 - April 2026
+                  SecureSeaHorse SIEM v3.1.4 - April 2026
 ===============================================================================
