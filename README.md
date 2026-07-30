@@ -1,4 +1,4 @@
-# 🐴 SecureSeaHorse SIEM v5.0.0 — split layout
+# 🐴 SecureSeaHorse SIEM v5.0.1 — split layout
 
 Two fully independent programs in one repo. Each folder builds on its own —
 no shared build, no shared CMake, no cross-folder includes.
