@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
-project(SeaHorseServer VERSION 5.0.0 LANGUAGES CXX)
+
+# Single source of truth for the version (../VERSION). Read before project().
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" SEAHORSE_VERSION)
+string(STRIP "${SEAHORSE_VERSION}" SEAHORSE_VERSION)
+project(SeaHorseServer VERSION ${SEAHORSE_VERSION} LANGUAGES CXX)
 
 # ==============================================================================
 # SecureSeaHorse SIEM -- SERVER (standalone build)
@@ -59,6 +63,7 @@ add_executable(SeaHorseServer
 )
 
 target_include_directories(SeaHorseServer PRIVATE ${SRC} ${PG_INCLUDES})
+target_compile_definitions(SeaHorseServer PRIVATE SEAHORSE_VERSION="${SEAHORSE_VERSION}")
 target_link_libraries(SeaHorseServer PRIVATE OpenSSL::SSL OpenSSL::Crypto ${PG_LIBS})
 if(WIN32)
     target_link_libraries(SeaHorseServer PRIVATE ws2_32 wsock32)
