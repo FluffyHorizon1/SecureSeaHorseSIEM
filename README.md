@@ -15,6 +15,15 @@ SecureSeaHorse/
 └── .gitignore
 ```
 
+## Build everything (one command)
+
+```bash
+cmake -S . -B build && cmake --build build -j    # builds server + client
+```
+
+The two programs are still fully independent -- build either on its own with the
+per-folder steps below.
+
 ## Build the server
 
 ```bash
