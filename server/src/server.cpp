@@ -45,6 +45,12 @@ using SOCKET = int;
 #include <openssl/rand.h>
 #include <filesystem>
 
+// Version is injected by CMake from the top-level VERSION file; fall back for
+// ad-hoc single-file builds.
+#ifndef SEAHORSE_VERSION
+#define SEAHORSE_VERSION "5.1.0"
+#endif
+
 // --- Phase 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 Headers ---
 #include "server_protocol.h" 
 #include "crypto_utils.h"         // Phase 3: HMAC, CRL, OCSP, heartbeat
@@ -1077,7 +1083,7 @@ int main(int argc, char* argv[]) {
 
     CliArgs cli = parse_server_cli(argc, argv);
     if (cli.show_help) { print_server_usage(argv[0]); return 0; }
-    if (cli.show_version) { std::cout << "SecureSeaHorse Server v5.0.0 (Phase 25)\n"; return 0; }
+    if (cli.show_version) { std::cout << "SecureSeaHorse Server v" SEAHORSE_VERSION "\n"; return 0; }
 
 #ifdef _WIN32
     WSADATA w;
@@ -1105,7 +1111,7 @@ int main(int argc, char* argv[]) {
         logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
     }
 
-    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Server v5.0.0 (Phase 25) starting ===");
+    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Server v" SEAHORSE_VERSION " starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
 
     // -------------------------------------------------------------------------

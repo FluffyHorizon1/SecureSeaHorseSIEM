@@ -32,6 +32,16 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure
 
+      - name: Version consistency
+        run: |
+          VER="$(tr -d '[:space:]' < VERSION)"
+          echo "VERSION file: $VER"
+          ./build/server/SeaHorseServer --version | grep -q "v$VER" \
+            || { echo "server --version does not match VERSION ($VER)"; exit 1; }
+          grep -q "v$VER" server/src/dashboard_html.h \
+            || { echo "dashboard_html.h version does not match VERSION ($VER)"; exit 1; }
+          echo "version consistent across VERSION, banner, dashboard"
+
   windows:
     name: Windows (build via vcpkg)
     runs-on: windows-latest

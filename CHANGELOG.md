@@ -9,6 +9,67 @@ break. `MINOR` jumps add features. `PATCH` is defensive-only.
 
 ---
 
+## [5.1.0] — 2026-09-18 — Consolidation & Hardening
+
+**Headline.** v5.1 makes the repository build from a clean clone, closes the
+security debt from the 2026-09-18 review, adds a test suite and CI, and lands
+several engines that had shipped as unwired header stubs. It is a `MINOR` bump:
+no wire-protocol change; the REST contract gains endpoints but breaks none.
+
+**Correction to the record.** The v5.0.0 notes below described Phases 16--25 as
+shipped. In the split `server/`+`client/` layout they were in fact present only
+as declaration-only header stubs that no translation unit compiled or linked
+(RBAC, Sigma, SOAR, syslog, hunt DSL, ML, WebSocket, agent-update, USB,
+self-protection, report generator). The buildable product was Phases 1--15.
+v5.1 begins landing 16--25 for real, honestly tracked.
+
+### Fixed
+- **Phase 26 — build restoration.** Un-mangled the 8.3 short filenames from the
+  Codespaces export (`CMAKEL~1.TXT` → `CMakeLists.txt`, `GITIGN~1` →
+  `.gitignore`, and the CHANGELOG/docs/installer). A fresh clone had not been
+  able to configure; `.gitignore` had been inert. Added a root superbuild.
+- **Phase 27 — ingest crash (DoS).** The process/connection/session/software
+  deserializers called `std::stoi/stoul/...` unguarded; one malformed packet
+  from a connected agent reached the worker thread and called `std::terminate()`.
+  Added `wire_parse.h` (non-throwing parsers) and a thread-pool task guard.
+- **Phase 28 — REST auth fail-closed.** The API skipped auth when the token was
+  empty and shipped a known default token bound to `0.0.0.0`. Now refuses to
+  start off-loopback without a strong token; default bind is loopback; CORS is
+  configurable (no more hard-coded `*`).
+
+### Added
+- **Phase 29 — tests + CI.** Dependency-free C++ test suite (deserializers,
+  config, JSON escaping, hunt allowlist, ML separation) and a GitHub Actions
+  workflow that builds server + client and runs `ctest`.
+- **Phase 30 — labeled alert history.** New `alert_history` table with an
+  analyst `disposition` label, `GET /api/alerts`, and
+  `POST /api/alerts/disposition` — the durable substrate supervised ML needs.
+- **Phase 31 — RBAC/JWT for real.** Landed with PBKDF2-HMAC-SHA256 password
+  hashing (was single-pass SHA-256), constant-time password/JWT comparison, and
+  a `--create-admin` bootstrap. `POST /api/auth/login` and `/api/auth/me`.
+- **Phase 33 — Hunt DSL.** `POST /api/hunt` (analyst+): the one-line DSL
+  compiles to parameterised SQL with a field allowlist; no user SQL is
+  concatenated.
+- **Phase 34 — ML anomaly detection.** Isolation forest + beaconing scorer on
+  live telemetry; findings persist as `threat_detections` (`ml_anomaly`) and
+  surface at `GET /api/anomalies`.
+
+### Changed
+- Single `VERSION` file is the source of truth (CMake + banner read it); fixed
+  the v5.0.0/v5.0.1 drift. `server.conf` now tags every section as WIRED or
+  PLANNED so it never implies a capability the binary lacks.
+
+### Known / not yet wired
+- **Phase 32 (Sigma)** is not in this release: the engine's mini-YAML parser
+  needs hardening (folded scalars + keyword-list selections) before the shipped
+  rules load. Tracked in `docs/ROADMAP_v5.1.md`.
+- ML scores on raw features; per-feature normalisation is a pending precision
+  follow-up (outlier/normal separation is currently narrow).
+- Full per-route RBAC gating is applied to the new sensitive endpoints; the
+  legacy read endpoints still use the bearer-token gate.
+
+---
+
 ## [5.0.0] — 2026-04-22 — React UI + WebSocket Live Stream
 
 **Headline.** The React single-page UI lands, and every detection engine

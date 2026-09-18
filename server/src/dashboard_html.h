@@ -82,7 +82,7 @@ tr:hover td{background:#1c2129}
 
 <div id="app">
 <div class="topbar">
-<h1>SecureSeaHorse <span>SIEM Dashboard v5.0.0</span></h1>
+<h1>SecureSeaHorse <span>SIEM Dashboard v5.1.0</span></h1>
 <div class="status">
 <span class="dot green" id="conn-dot"></span>
 <span id="conn-text">Connected</span>

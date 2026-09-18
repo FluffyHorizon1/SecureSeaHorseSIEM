@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.15)
-project(SeaHorseClient VERSION 5.0.0 LANGUAGES CXX)
+
+# Single source of truth for the version (../VERSION). Read before project().
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/../VERSION" SEAHORSE_VERSION)
+string(STRIP "${SEAHORSE_VERSION}" SEAHORSE_VERSION)
+project(SeaHorseClient VERSION ${SEAHORSE_VERSION} LANGUAGES CXX)
 
 # ==============================================================================
 # SecureSeaHorse SIEM -- CLIENT AGENT (standalone build)
