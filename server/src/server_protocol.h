@@ -177,6 +177,10 @@ struct CliArgs {
     std::map<std::string, std::string> overrides;
     bool show_help = false;
     bool show_version = false;
+    // Phase 31: admin bootstrap. When create_admin_email is set, main() creates
+    // the first admin user and exits (no server is started).
+    std::string create_admin_email;
+    std::string admin_password;   // optional; if empty a strong one is generated
 
     void apply_overrides(AppConfig& conf) const {
         for (const auto& [k, v] : overrides) conf.set(k, v);
@@ -211,6 +215,8 @@ inline CliArgs parse_server_cli(int argc, char* argv[]) {
             size_t eq = kv.find('=');
             if (eq != std::string::npos) args.overrides[kv.substr(0, eq)] = kv.substr(eq + 1);
         }
+        else if (arg == "--create-admin" && i + 1 < argc) { args.create_admin_email = argv[++i]; }
+        else if (arg == "--admin-password" && i + 1 < argc) { args.admin_password = argv[++i]; }
         else { std::cerr << "Unknown argument: " << arg << "\n"; }
     }
     return args;
