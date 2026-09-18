@@ -410,6 +410,8 @@ public:
         const std::string& os_user,
         const std::string& raw_log) const
     {
+        (void)machine_name;  // reserved for future hostname-IoC matching
+        (void)os_user;       // reserved for future user-IoC matching
         if (!config_.enabled) return {};
 
         std::shared_lock<std::shared_mutex> lock(rw_mutex_);

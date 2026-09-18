@@ -354,6 +354,7 @@ private:
                          int32_t dev, int64_t ts, const std::string& ip,
                          const DeviceBaseline& bl, const std::string& log)
     {
+        (void)bl;  // baseline not used by this detector (kept for signature symmetry)
         int refused = count_matches(log, pat_.conn_refused);
         int resets  = count_matches(log, pat_.conn_reset);
         int nmap    = count_matches(log, pat_.nmap_scan);
@@ -585,6 +586,7 @@ private:
                                  int32_t dev, int64_t ts, const std::string& ip,
                                  const DeviceBaseline& bl, const std::string& log)
     {
+        (void)bl;  // baseline not used by this detector (kept for signature symmetry)
         // --- Internal network scanning ---
         int internal_scans = count_matches(log, pat_.internal_scan);
         if (internal_scans >= config_.lateral_internal_scan_min) {
