@@ -1,6 +1,8 @@
 #ifndef PROCESS_MONITOR_H
 #define PROCESS_MONITOR_H
 
+#include "wire_parse.h"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -147,9 +149,9 @@ inline ProcessReport deserialize_process_report(const std::string& data) {
     {
         std::istringstream hdr(line.substr(5));
         std::string tok;
-        if (std::getline(hdr, tok, '|')) r.device_id = std::stoi(tok);
-        if (std::getline(hdr, tok, '|')) r.timestamp_ms = std::stoll(tok);
-        if (std::getline(hdr, tok, '|')) r.total_count = std::stoul(tok);
+        if (std::getline(hdr, tok, '|')) r.device_id = seahorse::wire::to_i32(tok);
+        if (std::getline(hdr, tok, '|')) r.timestamp_ms = seahorse::wire::to_i64(tok);
+        if (std::getline(hdr, tok, '|')) r.total_count = seahorse::wire::to_u32(tok);
     }
 
     // Process entries
@@ -158,12 +160,12 @@ inline ProcessReport deserialize_process_report(const std::string& data) {
         ProcessEntry p;
         std::istringstream row(line);
         std::string tok;
-        if (std::getline(row, tok, '|')) p.pid = std::stoul(tok);
-        if (std::getline(row, tok, '|')) p.ppid = std::stoul(tok);
+        if (std::getline(row, tok, '|')) p.pid = seahorse::wire::to_u32(tok);
+        if (std::getline(row, tok, '|')) p.ppid = seahorse::wire::to_u32(tok);
         if (std::getline(row, tok, '|')) p.name = tok;
         if (std::getline(row, tok, '|')) p.path = tok;
         if (std::getline(row, tok, '|')) p.user = tok;
-        if (std::getline(row, tok, '|')) p.memory_bytes = std::stoull(tok);
+        if (std::getline(row, tok, '|')) p.memory_bytes = seahorse::wire::to_u64(tok);
         if (std::getline(row, tok, '|')) p.is_elevated = (tok == "1");
         if (std::getline(row, tok, '|')) p.cmdline = tok;
         r.processes.push_back(std::move(p));
@@ -175,7 +177,7 @@ inline ProcessReport deserialize_process_report(const std::string& data) {
             uint32_t change_count = 0;
             auto bar = line.find('|');
             if (bar != std::string::npos)
-                change_count = std::stoul(line.substr(bar + 1));
+                change_count = seahorse::wire::to_u32(line.substr(bar + 1));
             for (uint32_t i = 0; i < change_count && std::getline(iss, line); i++) {
                 if (line == "PROC_END") break;
                 ProcessChange c;
@@ -186,7 +188,7 @@ inline ProcessReport deserialize_process_report(const std::string& data) {
                     else if (tok == "terminated") c.type = ProcessChangeType::PROC_TERMINATED;
                     else c.type = ProcessChangeType::PROC_SUSPICIOUS;
                 }
-                if (std::getline(crow, tok, '|')) c.process.pid = std::stoul(tok);
+                if (std::getline(crow, tok, '|')) c.process.pid = seahorse::wire::to_u32(tok);
                 if (std::getline(crow, tok, '|')) c.process.name = tok;
                 if (std::getline(crow, tok, '|')) c.reason = tok;
                 r.changes.push_back(std::move(c));
@@ -388,7 +390,7 @@ private:
             }
             if (!is_pid) continue;
 
-            uint32_t pid = std::stoul(entry->d_name);
+            uint32_t pid = seahorse::wire::to_u32(entry->d_name);
             ProcessEntry p;
             p.pid = pid;
 

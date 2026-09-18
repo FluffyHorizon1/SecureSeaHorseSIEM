@@ -1,6 +1,8 @@
 #ifndef CONNECTION_INVENTORY_H
 #define CONNECTION_INVENTORY_H
 
+#include "wire_parse.h"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -108,11 +110,11 @@ inline ConnectionReport deserialize_connection_report(const std::string& data) {
     {
         std::istringstream hdr(line.substr(5));
         std::string tok;
-        if (std::getline(hdr, tok, '|')) r.device_id = std::stoi(tok);
-        if (std::getline(hdr, tok, '|')) r.timestamp_ms = std::stoll(tok);
+        if (std::getline(hdr, tok, '|')) r.device_id = seahorse::wire::to_i32(tok);
+        if (std::getline(hdr, tok, '|')) r.timestamp_ms = seahorse::wire::to_i64(tok);
         uint32_t conn_count = 0, change_count = 0;
-        if (std::getline(hdr, tok, '|')) conn_count = std::stoul(tok);
-        if (std::getline(hdr, tok, '|')) change_count = std::stoul(tok);
+        if (std::getline(hdr, tok, '|')) conn_count = seahorse::wire::to_u32(tok);
+        if (std::getline(hdr, tok, '|')) change_count = seahorse::wire::to_u32(tok);
         (void)change_count;
 
         for (uint32_t i = 0; i < conn_count && std::getline(iss, line); i++) {
@@ -122,11 +124,11 @@ inline ConnectionReport deserialize_connection_report(const std::string& data) {
             std::string t;
             if (std::getline(row, t, '|')) c.protocol = t;
             if (std::getline(row, t, '|')) c.local_addr = t;
-            if (std::getline(row, t, '|')) c.local_port = static_cast<uint16_t>(std::stoul(t));
+            if (std::getline(row, t, '|')) c.local_port = static_cast<uint16_t>(seahorse::wire::to_u32(t));
             if (std::getline(row, t, '|')) c.remote_addr = t;
-            if (std::getline(row, t, '|')) c.remote_port = static_cast<uint16_t>(std::stoul(t));
+            if (std::getline(row, t, '|')) c.remote_port = static_cast<uint16_t>(seahorse::wire::to_u32(t));
             if (std::getline(row, t, '|')) c.state = t;
-            if (std::getline(row, t, '|')) c.owning_pid = std::stoul(t);
+            if (std::getline(row, t, '|')) c.owning_pid = seahorse::wire::to_u32(t);
             if (std::getline(row, t, '|')) c.process_name = t;
             r.connections.push_back(std::move(c));
         }
@@ -145,7 +147,7 @@ inline ConnectionReport deserialize_connection_report(const std::string& data) {
         }
         if (std::getline(row, t, '|')) ch.conn.protocol = t;
         if (std::getline(row, t, '|')) ch.conn.remote_addr = t;
-        if (std::getline(row, t, '|')) ch.conn.remote_port = static_cast<uint16_t>(std::stoul(t));
+        if (std::getline(row, t, '|')) ch.conn.remote_port = static_cast<uint16_t>(seahorse::wire::to_u32(t));
         if (std::getline(row, t, '|')) ch.reason = t;
         r.changes.push_back(std::move(ch));
     }
