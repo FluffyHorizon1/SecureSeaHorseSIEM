@@ -1,6 +1,8 @@
 #ifndef SESSION_TRACKER_H
 #define SESSION_TRACKER_H
 
+#include "wire_parse.h"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -128,12 +130,12 @@ inline SessionReport deserialize_session_report(const std::string& data) {
     {
         std::istringstream hdr(line.substr(5));
         std::string tok;
-        if (std::getline(hdr, tok, '|')) r.device_id = std::stoi(tok);
-        if (std::getline(hdr, tok, '|')) r.timestamp_ms = std::stoll(tok);
+        if (std::getline(hdr, tok, '|')) r.device_id = seahorse::wire::to_i32(tok);
+        if (std::getline(hdr, tok, '|')) r.timestamp_ms = seahorse::wire::to_i64(tok);
         uint32_t sess_count = 0, auth_count = 0;
-        if (std::getline(hdr, tok, '|')) sess_count = std::stoul(tok);
-        if (std::getline(hdr, tok, '|')) auth_count = std::stoul(tok);
-        if (std::getline(hdr, tok, '|')) r.failed_logins = std::stoul(tok);
+        if (std::getline(hdr, tok, '|')) sess_count = seahorse::wire::to_u32(tok);
+        if (std::getline(hdr, tok, '|')) auth_count = seahorse::wire::to_u32(tok);
+        if (std::getline(hdr, tok, '|')) r.failed_logins = seahorse::wire::to_u32(tok);
         (void)auth_count;
 
         for (uint32_t i = 0; i < sess_count && std::getline(iss, line); i++) {
@@ -145,7 +147,7 @@ inline SessionReport deserialize_session_report(const std::string& data) {
             if (std::getline(row, t, '|')) s.session_type = t;
             if (std::getline(row, t, '|')) s.source_ip = t;
             if (std::getline(row, t, '|')) s.terminal = t;
-            if (std::getline(row, t, '|')) s.login_time_ms = std::stoll(t);
+            if (std::getline(row, t, '|')) s.login_time_ms = seahorse::wire::to_i64(t);
             if (std::getline(row, t, '|')) s.is_active = (t == "1");
             if (std::getline(row, t, '|')) s.is_elevated = (t == "1");
             r.active_sessions.push_back(std::move(s));
@@ -164,7 +166,7 @@ inline SessionReport deserialize_session_report(const std::string& data) {
             else if (t == "priv_escalation") a.type = AuthEventType::AUTH_PRIVILEGE_ESCALATION;
             else if (t == "account_lockout") a.type = AuthEventType::AUTH_ACCOUNT_LOCKOUT;
         }
-        if (std::getline(row, t, '|')) a.timestamp_ms = std::stoll(t);
+        if (std::getline(row, t, '|')) a.timestamp_ms = seahorse::wire::to_i64(t);
         if (std::getline(row, t, '|')) a.username = t;
         if (std::getline(row, t, '|')) a.source_ip = t;
         if (std::getline(row, t, '|')) a.session_type = t;

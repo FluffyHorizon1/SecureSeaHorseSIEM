@@ -303,7 +303,13 @@ private:
               if (!got_work) { if (total_workers_.load() > config_.min_threads) { total_workers_--; return; } continue; }
               if (tasks_.empty()) continue;
               task = std::move(tasks_.front()); tasks_.pop(); pending_tasks_--; }
-            active_workers_++; task(); active_workers_--;
+            active_workers_++;
+            // Phase 27: a task must never let an exception escape the worker
+            // thread -- an uncaught throw here calls std::terminate() and takes
+            // the whole server down. Swallow and keep the pool alive; the task
+            // (a client handler) has already logged whatever failed.
+            try { task(); } catch (...) {}
+            active_workers_--;
         }
     }
     void spawn_worker() { std::lock_guard<std::mutex> lock(workers_mutex_); workers_.emplace_back(&DynamicThreadPool::worker_func, this); }

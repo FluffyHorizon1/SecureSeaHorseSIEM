@@ -1,6 +1,8 @@
 #ifndef SOFTWARE_INVENTORY_H
 #define SOFTWARE_INVENTORY_H
 
+#include "wire_parse.h"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -108,10 +110,10 @@ inline SoftwareReport deserialize_software_report(const std::string& data) {
     {
         std::istringstream hdr(line.substr(6));
         std::string tok;
-        if (std::getline(hdr, tok, '|')) r.device_id = std::stoi(tok);
-        if (std::getline(hdr, tok, '|')) r.timestamp_ms = std::stoll(tok);
+        if (std::getline(hdr, tok, '|')) r.device_id = seahorse::wire::to_i32(tok);
+        if (std::getline(hdr, tok, '|')) r.timestamp_ms = seahorse::wire::to_i64(tok);
         uint32_t sw_count = 0;
-        if (std::getline(hdr, tok, '|')) sw_count = std::stoul(tok);
+        if (std::getline(hdr, tok, '|')) sw_count = seahorse::wire::to_u32(tok);
 
         for (uint32_t i = 0; i < sw_count && std::getline(iss, line); i++) {
             if (line == "SW_CHANGES") break;
@@ -122,7 +124,7 @@ inline SoftwareReport deserialize_software_report(const std::string& data) {
             if (std::getline(row, t, '|')) s.version = t;
             if (std::getline(row, t, '|')) s.publisher = t;
             if (std::getline(row, t, '|')) s.install_date = t;
-            if (std::getline(row, t, '|')) s.size_bytes = std::stoull(t);
+            if (std::getline(row, t, '|')) s.size_bytes = seahorse::wire::to_u64(t);
             r.software.push_back(std::move(s));
         }
     }
@@ -322,7 +324,7 @@ private:
             if (std::getline(iss, tok, '|')) e.name = tok;
             if (std::getline(iss, tok, '|')) e.version = tok;
             if (std::getline(iss, tok, '|')) {
-                try { e.size_bytes = std::stoull(tok); } catch (...) {}
+                try { e.size_bytes = seahorse::wire::to_u64(tok); } catch (...) {}
                 // dpkg reports in KB
                 if (std::string(source) == "dpkg") e.size_bytes *= 1024;
             }
