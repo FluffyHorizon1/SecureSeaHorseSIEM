@@ -20,6 +20,14 @@ project(SecureSeaHorseSIEM LANGUAGES CXX)
 
 option(BUILD_SERVER "Build the SeaHorse analysis server" ON)
 option(BUILD_CLIENT "Build the SeaHorse endpoint agent" ON)
+option(BUILD_TESTS  "Build the test suite (Phase 29)" ON)
+# Flip on once the remaining -Wall -Wextra warnings are cleared (see docs/ROADMAP_v5.1.md).
+# CI passes -DENABLE_WERROR=ON; the default build stays lenient so contributors are not blocked.
+option(ENABLE_WERROR "Treat warnings as errors" OFF)
+
+if(ENABLE_WERROR AND NOT MSVC)
+    add_compile_options(-Werror)
+endif()
 
 if(BUILD_SERVER)
     add_subdirectory(server)
@@ -29,4 +37,9 @@ if(BUILD_CLIENT)
     add_subdirectory(client)
 endif()
 
-message(STATUS "SecureSeaHorse superbuild: server=${BUILD_SERVER} client=${BUILD_CLIENT}")
+if(BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()
+
+message(STATUS "SecureSeaHorse superbuild: server=${BUILD_SERVER} client=${BUILD_CLIENT} tests=${BUILD_TESTS} werror=${ENABLE_WERROR}")
