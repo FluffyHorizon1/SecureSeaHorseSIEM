@@ -11,6 +11,7 @@ set(SEAHORSE_TESTS
     test_config
     test_json_escape
     test_hunt
+    test_ml
 )
 
 foreach(t ${SEAHORSE_TESTS})
