@@ -67,6 +67,7 @@ using SOCKET = int;
 #include "correlation_engine.h"   // Phase 15: Cross-device correlation
 #include "rbac.h"                 // Phase 20/31: RBAC, JWT auth, PBKDF2, tenants
 #include "hunt_query.h"           // Phase 23/33: Hunt DSL -> parameterised SQL
+#include "ml_anomaly.h"           // Phase 24/34: isolation forest + beaconing
 
 // =============================================================================
 // GLOBAL CONTROL
@@ -94,6 +95,7 @@ static std::unique_ptr<FleetManager>       fleet_mgr;       // Phase 9
 static std::unique_ptr<NetworkInspector>   net_inspector;   // Phase 10
 static std::unique_ptr<CorrelationEngine>  correlator;     // Phase 15
 static std::unique_ptr<RbacManager>        rbac;           // Phase 20/31
+static std::unique_ptr<MlAnomalyDetector>  ml;             // Phase 24/34
 static std::chrono::steady_clock::time_point server_start_time;
 
 // Phase 3 config
@@ -385,6 +387,51 @@ void process_report(RawTelemetry& current) {
         uint64_t total_delta = curr_total - prev_total;
         uint64_t idle_delta  = current.cpu_idle_ticks - last.cpu_idle_ticks;
         float cpu_usage = (total_delta > 0) ? 100.0f * (1.0f - ((float)idle_delta / (float)total_delta)) : 0.0f;
+
+        // =================================================================
+        // PHASE 34 [ML ANOMALY]: score this sample before last_report is
+        // overwritten (we need the inter-report interval for beaconing).
+        // =================================================================
+        if (ml) {
+            AnomalyFeatures feat;
+            feat.cpu_pct        = cpu_usage;
+            feat.ram_pct        = (current.ram_total_bytes > 0)
+                ? 100.0 * (1.0 - (double)current.ram_avail_bytes / (double)current.ram_total_bytes)
+                : 0.0;
+            feat.net_in_rate    = static_cast<double>(current.net_bytes_in);
+            feat.net_out_rate   = static_cast<double>(current.net_bytes_out);
+            feat.event_rate     = static_cast<double>(sec_events.size());
+            feat.auth_fail_rate = static_cast<double>(new_fails);
+            feat.interval_ms    = static_cast<double>(current.timestamp_ms - last.timestamp_ms);
+
+            auto ml_findings = ml->observe(current.device_id, current.timestamp_ms,
+                                           current.machine_ip, feat);
+            for (const auto& f : ml_findings) {
+                g_total_threats++;
+                if (pg_store) {
+                    pg_store->insert_threat_detection(
+                        f.device_id, f.timestamp_ms, f.machine_ip.c_str(),
+                        "ml_anomaly", f.detector, f.severity, f.score,
+                        f.mitre_id, f.mitre_tactic, f.mitre_tactic,
+                        f.description, f.evidence);
+                    pg_store->insert_alert(
+                        f.device_id, f.timestamp_ms, f.machine_ip.c_str(),
+                        "ml_anomaly", f.detector, f.severity, f.mitre_id, f.description);
+                }
+                if (correlator) {
+                    CorrEvent ce;
+                    ce.device_id = f.device_id; ce.timestamp_ms = f.timestamp_ms;
+                    ce.source = "ml"; ce.category = "ml_anomaly";
+                    ce.severity = f.severity; ce.machine_ip = f.machine_ip;
+                    ce.detail = f.description;
+                    correlator->ingest(ce);
+                }
+                logger->log(f.severity == "critical" ? AsyncLogger::ERROR_LOG : AsyncLogger::WARN,
+                    "[ML] " + f.detector + " score=" + std::to_string(f.score)
+                    + " dev=" + std::to_string(f.device_id) + " | " + f.description);
+            }
+        }
+
         state->last_report = current;
 
         // Phase 2: DB persistence -- telemetry
@@ -1384,6 +1431,29 @@ int main(int argc, char* argv[]) {
     }
 
     // -------------------------------------------------------------------------
+    // PHASE 24/34 [ML ANOMALY]: isolation forest + beaconing on telemetry
+    // -------------------------------------------------------------------------
+    {
+        if (conf.get_bool("ml_enabled", true)) {
+            MlAnomalyDetector::Config mc;
+            mc.enabled            = true;
+            mc.window_size        = conf.get_size("ml_window_size", 2048);
+            mc.warmup_samples     = conf.get_int("ml_warmup_samples", 128);
+            mc.retrain_interval_s = conf.get_int("ml_retrain_interval_s", 300);
+            mc.score_threshold    = std::stod(conf.get("ml_alert_score_min", "0.65"));
+            mc.forest_config.num_trees = conf.get_int("ml_isoforest_trees", 100);
+            mc.forest_config.subsample = conf.get_int("ml_isoforest_subsample", 256);
+            ml = std::make_unique<MlAnomalyDetector>(mc);
+            logger->log(AsyncLogger::INFO,
+                "ML Anomaly: ENABLED | window=" + std::to_string(mc.window_size)
+                + " warmup=" + std::to_string(mc.warmup_samples)
+                + " score_min=" + conf.get("ml_alert_score_min", "0.65"));
+        } else {
+            logger->log(AsyncLogger::INFO, "ML Anomaly: disabled.");
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // 2. Security (Phase 3)
     // -------------------------------------------------------------------------
     init_openssl();
@@ -1661,6 +1731,26 @@ int main(int argc, char* argv[]) {
                 return HttpResponse::json("{\"ok\":true}");
             });
 
+            // --- Phase 24/34: ML anomalies (filtered threat_detections) ---
+            rest_server->get("/api/anomalies", [clamp_limit](const HttpRequest& req) {
+                if (!pg_store) return HttpResponse::json("[]");
+                int limit = clamp_limit(req.get_param_int("limit", 50));
+                int dev   = req.get_param_int("device_id", -1);
+                if (pg_store->is_connected()) {
+                    std::string sql =
+                        "SELECT device_id, timestamp_ms, machine_ip, sub_type AS detector, "
+                        "confidence AS score, severity, mitre_id, description, evidence "
+                        "FROM threat_detections WHERE category = 'ml_anomaly'";
+                    std::string dev_str; const char* params[1] = { nullptr }; int n = 0;
+                    if (dev >= 0) { sql += " AND device_id = $1"; dev_str = std::to_string(dev);
+                                    params[0] = dev_str.c_str(); n = 1; }
+                    sql += " ORDER BY received_at DESC";
+                    std::string j = pg_store->query_json(sql.c_str(), n, n ? params : nullptr, limit);
+                    if (!j.empty()) return HttpResponse::json(j);
+                }
+                return HttpResponse::json("[]");
+            });
+
             // --- Phase 23/33: Hunt DSL ---
             // Compiles the one-line DSL to a parameterised SQL plan (field
             // allowlist + $N binds enforced in hunt_query.h -- no user SQL is
@@ -1827,6 +1917,7 @@ int main(int argc, char* argv[]) {
     fleet_mgr.reset();
     net_inspector.reset();
     correlator.reset();
+    ml.reset();
     rbac.reset();
     fim_monitor.reset();
     threat_intel.reset();
