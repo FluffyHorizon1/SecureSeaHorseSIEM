@@ -1285,8 +1285,36 @@ int main(int argc, char* argv[]) {
         RestConfig rest_cfg;
         rest_cfg.enabled      = conf.get_bool("rest_enabled", true);
         rest_cfg.port         = conf.get_int("rest_port", 8080);
-        rest_cfg.bind_address = conf.get("rest_bind", "0.0.0.0");
+        rest_cfg.bind_address = conf.get("rest_bind", "127.0.0.1");
         rest_cfg.api_token    = conf.get("rest_api_token", "");
+        rest_cfg.cors_origin  = conf.get("rest_cors_origin", "");
+
+        // ---------------------------------------------------------------------
+        // PHASE 28: fail closed. The REST API must never be reachable off-box
+        // without a real token. Refuse to expose it when the bind address is not
+        // loopback AND the token is empty or a shipped default. This closes the
+        // exposure (review 4.2) without taking down the core TLS SIEM, which
+        // keeps ingesting telemetry regardless.
+        // ---------------------------------------------------------------------
+        {
+            const std::string& b = rest_cfg.bind_address;
+            bool loopback = (b == "127.0.0.1" || b == "::1" || b == "localhost");
+            bool token_weak = rest_cfg.api_token.empty()
+                || rest_cfg.api_token.find("changeme") != std::string::npos;
+            if (rest_cfg.enabled && !loopback && token_weak) {
+                logger->log(AsyncLogger::ERROR_LOG,
+                    "REST API: refusing to start on non-loopback bind '" + b +
+                    "' with an empty or default rest_api_token. Set a strong "
+                    "rest_api_token (or bind to 127.0.0.1). Core SIEM continues; "
+                    "the dashboard/API stays DOWN until this is fixed.");
+                rest_cfg.enabled = false;
+            } else if (rest_cfg.enabled && loopback && token_weak) {
+                logger->log(AsyncLogger::WARN,
+                    "REST API: no rest_api_token set -- allowed only because bind "
+                    "is loopback (" + b + "). Do NOT expose this port; set a token "
+                    "before binding to a routable address.");
+            }
+        }
 
         if (rest_cfg.enabled) {
             rest_server = std::make_unique<RestServer>(rest_cfg);

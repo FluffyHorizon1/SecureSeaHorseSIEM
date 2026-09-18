@@ -118,9 +118,10 @@ struct HttpResponse {
         oss << "HTTP/1.1 " << status_code << " " << status_text << "\r\n";
         oss << "Content-Type: " << content_type << "\r\n";
         oss << "Content-Length: " << body.size() << "\r\n";
-        oss << "Access-Control-Allow-Origin: *\r\n";
-        oss << "Access-Control-Allow-Headers: Authorization, Content-Type\r\n";
-        oss << "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n";
+        // CORS headers are NOT hard-coded here. When configured, RestServer
+        // injects a specific Access-Control-Allow-Origin into `headers` below
+        // (Phase 28). Default is same-origin only -- the dashboard is served
+        // from this same origin, so it needs no CORS at all.
         oss << "Connection: close\r\n";
         for (const auto& [k, v] : headers) {
             oss << k << ": " << v << "\r\n";
@@ -247,8 +248,9 @@ struct Route {
 struct RestConfig {
     bool        enabled       = true;
     int         port          = 8080;
-    std::string bind_address  = "0.0.0.0";
-    std::string api_token     = "";        // Static bearer token (empty = no auth)
+    std::string bind_address  = "127.0.0.1"; // Fail-safe default: loopback only
+    std::string api_token     = "";        // Static bearer token (empty = no auth; only allowed on loopback -- see main())
+    std::string cors_origin   = "";        // Access-Control-Allow-Origin; empty = no CORS header (same-origin only)
     int         max_body_size = 1024 * 64; // 64KB max request body
     int         read_timeout  = 5;         // Seconds
 };
@@ -463,6 +465,7 @@ private:
             resp.status_code = 204;
             resp.status_text = "No Content";
             resp.body = "";
+            apply_cors(resp);
             std::string wire = resp.serialize();
             send(sock, wire.c_str(), static_cast<int>(wire.size()), 0);
             closesocket(sock);
@@ -496,9 +499,22 @@ private:
         }
 
         // Send response
+        apply_cors(resp);
         std::string wire = resp.serialize();
         send(sock, wire.c_str(), static_cast<int>(wire.size()), 0);
         closesocket(sock);
+    }
+
+    // Inject the configured CORS headers, if any. Empty cors_origin => no CORS
+    // header at all (same-origin only), which is the safe default for a
+    // security product. Set rest_cors_origin in server.conf to allow a specific
+    // dashboard origin.
+    void apply_cors(HttpResponse& resp) const {
+        if (config_.cors_origin.empty()) return;
+        resp.headers["Access-Control-Allow-Origin"]  = config_.cors_origin;
+        resp.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type";
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
+        resp.headers["Vary"] = "Origin";
     }
 
     // =========================================================================
