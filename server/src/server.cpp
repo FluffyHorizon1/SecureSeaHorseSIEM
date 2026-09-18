@@ -42,6 +42,8 @@ using SOCKET = int;
 // --- OPENSSL INCLUDES ---
 #include <openssl/ssl.h>
 #include <openssl/err.h>
+#include <openssl/rand.h>
+#include <filesystem>
 
 // --- Phase 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 Headers ---
 #include "server_protocol.h" 
@@ -63,6 +65,7 @@ using SOCKET = int;
 #include "session_tracker.h"      // Phase 13: Session report handling
 #include "software_inventory.h"   // Phase 14: Software report handling
 #include "correlation_engine.h"   // Phase 15: Cross-device correlation
+#include "rbac.h"                 // Phase 20/31: RBAC, JWT auth, PBKDF2, tenants
 
 // =============================================================================
 // GLOBAL CONTROL
@@ -89,6 +92,7 @@ static std::unique_ptr<IncidentResponseEngine> ir_engine;  // Phase 8
 static std::unique_ptr<FleetManager>       fleet_mgr;       // Phase 9
 static std::unique_ptr<NetworkInspector>   net_inspector;   // Phase 10
 static std::unique_ptr<CorrelationEngine>  correlator;     // Phase 15
+static std::unique_ptr<RbacManager>        rbac;           // Phase 20/31
 static std::chrono::steady_clock::time_point server_start_time;
 
 // Phase 3 config
@@ -97,6 +101,30 @@ static int  g_connection_timeout = 120;
 
 // Phase 4 stats
 static std::atomic<size_t> g_total_threats{0};
+
+// Phase 31: cryptographically-random password for the --create-admin bootstrap.
+static std::string generate_strong_password(size_t len = 24) {
+    static const char* alpha =
+        "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789-_@#";
+    const size_t n = std::strlen(alpha);
+    std::vector<unsigned char> buf(len);
+    if (RAND_bytes(buf.data(), static_cast<int>(len)) != 1) return "";  // no weak fallback
+    std::string out; out.reserve(len);
+    for (size_t i = 0; i < len; i++) out += alpha[buf[i] % n];
+    return out;
+}
+
+// Phase 31: create the parent directory of a store file so first-run writes land.
+static void ensure_parent_dir(const std::string& file_path) {
+    try {
+        auto parent = std::filesystem::path(file_path).parent_path();
+        if (!parent.empty()) std::filesystem::create_directories(parent);
+    } catch (...) { /* best effort */ }
+}
+
+// Phase 31: RBAC gate for a route. With RBAC disabled the legacy bearer-token
+// check in RestServer already applies, so this returns true (no double gate).
+static bool rbac_require(const HttpRequest& req, Role need);  // defined after globals
 
 // Phase 30: minimal JSON string-field extractor for REST bodies (no JSON dep).
 // Handles the escapes the dashboard/CLI actually send. Returns "" if absent.
@@ -131,6 +159,13 @@ static std::string json_field(const std::string& body, const std::string& key) {
 void PgStore::log_msg(const std::string& msg, bool is_error) {
     if (logger_) logger_->log(is_error ? AsyncLogger::ERROR_LOG : AsyncLogger::INFO, "[DB] " + msg);
     else std::cerr << "[DB] " << msg << "\n";
+}
+
+// Phase 31: definition of the RBAC route gate (rbac global declared above).
+static bool rbac_require(const HttpRequest& req, Role need) {
+    if (!rbac) return true;   // RBAC off: RestServer's legacy token gate applies
+    auto claims = rbac->verify_jwt(req.bearer_token());
+    return claims.valid && rbac->allow(claims.role, need);
 }
 
 // =============================================================================
@@ -1025,6 +1060,70 @@ int main(int argc, char* argv[]) {
     logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Server v5.0.0 (Phase 25) starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
 
+    // -------------------------------------------------------------------------
+    // PHASE 20/31 [RBAC]: config, admin bootstrap, weak-secret refusal
+    // -------------------------------------------------------------------------
+    {
+        RbacManager::Config rc;
+        rc.enabled          = conf.get_bool("rbac_enabled", false);
+        // Accept the shipped key name (rbac_jwt_secret) and the older rbac_secret.
+        rc.secret           = conf.get("rbac_jwt_secret", conf.get("rbac_secret", ""));
+        rc.users_file       = conf.get("rbac_users_db", "rbac/users.db");
+        rc.tenants_file     = conf.get("rbac_tenants_db", "rbac/tenants.db");
+        rc.audit_log        = conf.get("rbac_audit_log", "rbac/audit.log");
+        rc.token_lifetime_s = conf.get_int("rbac_token_ttl_s", 28800);
+
+        // --- Admin bootstrap: create the first admin and exit (review 4.5). ---
+        if (!cli.create_admin_email.empty()) {
+            ensure_parent_dir(rc.users_file);
+            ensure_parent_dir(rc.tenants_file);
+            ensure_parent_dir(rc.audit_log);
+            rbac = std::make_unique<RbacManager>(rc);
+            std::string tenant = conf.get("rbac_default_tenant", "default");
+            rbac->create_tenant(tenant, "Default Tenant");   // no-op if it exists
+            std::string pw = cli.admin_password;
+            bool generated = false;
+            if (pw.empty()) { pw = generate_strong_password(); generated = true; }
+            if (pw.empty()) { std::cerr << "[ERROR] RNG unavailable; pass --admin-password.\n"; return 1; }
+            bool ok = rbac->create_user(cli.create_admin_email, pw, tenant, Role::ADMIN);
+            if (ok) {
+                logger->log(AsyncLogger::INFO,
+                    "Admin created: " + cli.create_admin_email + " (tenant=" + tenant + ")");
+                std::cout << "\n[OK] Admin user created: " << cli.create_admin_email
+                          << "  tenant=" << tenant << "\n";
+                if (generated)
+                    std::cout << "     Generated password (shown once -- store it now): " << pw << "\n";
+                std::cout << "     Users DB: " << rc.users_file << "\n"
+                          << "     Set rbac_enabled=true and a 32+ byte rbac_jwt_secret to use it.\n\n";
+                return 0;
+            }
+            std::cerr << "[ERROR] Could not create admin (user already exists, "
+                         "or the users/tenants store is not writable).\n";
+            return 1;
+        }
+
+        // --- Normal runtime: stand up RBAC only when enabled AND secret strong. ---
+        if (rc.enabled) {
+            if (rc.secret.empty() || rc.secret.find("changeme") != std::string::npos
+                                  || rc.secret.size() < 32) {
+                logger->log(AsyncLogger::ERROR_LOG,
+                    "RBAC: rbac_jwt_secret is unset, default, or too short (<32 bytes) -- "
+                    "refusing to start. Set a long random value in server.conf.");
+                return 1;
+            }
+            rbac = std::make_unique<RbacManager>(rc);
+            logger->log(AsyncLogger::INFO,
+                "RBAC: ENABLED | users=" + std::to_string(rbac->user_count())
+                + " tenants=" + std::to_string(rbac->tenant_count())
+                + " token_ttl=" + std::to_string(rc.token_lifetime_s) + "s");
+            if (rbac->user_count() == 0)
+                logger->log(AsyncLogger::WARN,
+                    "RBAC: no users exist. Bootstrap one: SeaHorseServer --create-admin <email>");
+        } else {
+            logger->log(AsyncLogger::INFO, "RBAC: disabled (legacy bearer token).");
+        }
+    }
+
     // Legacy CSV
     std::string csv_path = conf.get("csv_output", "s_log.csv");
     if (!csv_path.empty() && csv_path != "none") {
@@ -1545,6 +1644,9 @@ int main(int argc, char* argv[]) {
             //   {"id":"123","disposition":"true_positive","analyst":"alice"}
             rest_server->post("/api/alerts/disposition", [](const HttpRequest& req) {
                 if (!pg_store) return HttpResponse::error(503, "DB disabled");
+                // Phase 31: labeling requires analyst+ when RBAC is enabled.
+                if (!rbac_require(req, Role::ANALYST))
+                    return HttpResponse::error(403, "analyst role required");
                 std::string id      = json_field(req.body, "id");
                 std::string disp    = json_field(req.body, "disposition");
                 std::string analyst = json_field(req.body, "analyst");
@@ -1557,6 +1659,34 @@ int main(int argc, char* argv[]) {
                     return HttpResponse::error(404, "alert not found or update failed");
                 return HttpResponse::json("{\"ok\":true}");
             });
+
+            // --- Phase 20/31: authentication endpoints ---
+            rest_server->post("/api/auth/login", [](const HttpRequest& req) {
+                if (!rbac) return HttpResponse::error(503, "RBAC disabled");
+                std::string u = json_field(req.body, "username");
+                std::string p = json_field(req.body, "password");
+                if (u.empty() || p.empty())
+                    return HttpResponse::error(400, "username+password required");
+                auto res = rbac->login(u, p, "rest_api");
+                if (!res.success) return HttpResponse::error(401, "invalid credentials");
+                return HttpResponse::json(
+                    std::string("{\"token\":\"") + res.jwt
+                    + "\",\"role\":\""   + role_to_str(res.role)
+                    + "\",\"tenant\":\"" + res.tenant_id + "\"}");
+            }, false);
+
+            rest_server->post("/api/auth/me", [](const HttpRequest& req) {
+                if (!rbac) return HttpResponse::error(503, "RBAC disabled");
+                std::string t = json_field(req.body, "token");
+                if (t.empty()) t = req.bearer_token();
+                auto c = rbac->verify_jwt(t);
+                if (!c.valid) return HttpResponse::error(401, "Invalid token");
+                return HttpResponse::json(
+                    std::string("{\"username\":\"") + c.username
+                    + "\",\"role\":\""   + role_to_str(c.role)
+                    + "\",\"tenant\":\"" + c.tenant_id
+                    + "\",\"exp_ms\":"   + std::to_string(c.exp_ms) + "}");
+            }, false);
 
             if (rest_server->start()) {
                 logger->log(AsyncLogger::INFO,
@@ -1655,6 +1785,7 @@ int main(int argc, char* argv[]) {
     fleet_mgr.reset();
     net_inspector.reset();
     correlator.reset();
+    rbac.reset();
     fim_monitor.reset();
     threat_intel.reset();
     classifier.reset();
