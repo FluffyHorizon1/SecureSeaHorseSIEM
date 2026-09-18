@@ -387,6 +387,88 @@ public:
             "FROM security_events ORDER BY received_at DESC", 0, nullptr, limit);
     }
 
+    // =========================================================================
+    // PHASE 30: Alert history (labeled substrate for supervised ML)
+    // =========================================================================
+
+    // Record an alert for later analyst disposition. Fire-and-forget: a failure
+    // here must never disrupt detection, so it returns bool and is not awaited.
+    bool insert_alert(int32_t device_id, int64_t timestamp_ms,
+                      const char* machine_ip,
+                      const std::string& source,
+                      const std::string& category,
+                      const std::string& severity,
+                      const std::string& mitre_id,
+                      const std::string& description)
+    {
+        if (!config_.enabled) return false;
+        const char* sql =
+            "INSERT INTO alert_history "
+            "(device_id, timestamp_ms, machine_ip, source, category, severity, "
+            " mitre_id, description) "
+            "VALUES ($1,$2,$3,$4,$5,$6,$7,$8)";
+        std::string s_dev = std::to_string(device_id);
+        std::string s_ts  = std::to_string(timestamp_ms);
+        std::string safe_desc = description.substr(0, 512);
+        const char* params[8] = {
+            s_dev.c_str(), s_ts.c_str(), machine_ip,
+            source.c_str(), category.c_str(), severity.c_str(),
+            mitre_id.c_str(), safe_desc.c_str()
+        };
+        return exec_params(sql, 8, params);
+    }
+
+    // Valid disposition labels. Kept here so both the DB layer and the API gate
+    // on the same allowlist.
+    static bool is_valid_disposition(const std::string& d) {
+        return d == "unset" || d == "true_positive"
+            || d == "false_positive" || d == "benign";
+    }
+
+    // Record an analyst's label on an alert. `id_text` is the alert id as a
+    // string (bound as a parameter -- never concatenated). Rejects an unknown
+    // disposition. Returns true if exactly one row was updated.
+    bool set_alert_disposition(const std::string& id_text,
+                               const std::string& disposition,
+                               const std::string& analyst_id)
+    {
+        if (!config_.enabled || !conn_) return false;
+        if (!is_valid_disposition(disposition)) return false;
+        // id must be a plain integer; reject anything else defensively.
+        if (id_text.empty() ||
+            id_text.find_first_not_of("0123456789") != std::string::npos) return false;
+
+        std::lock_guard<std::mutex> lock(conn_mutex_);
+        if (PQstatus(conn_) != CONNECTION_OK) return false;
+        const char* sql =
+            "UPDATE alert_history SET disposition = $2, analyst_id = $3, "
+            "labeled_at = NOW() WHERE id = $1";
+        std::string safe_analyst = analyst_id.substr(0, 128);
+        const char* params[3] = { id_text.c_str(), disposition.c_str(), safe_analyst.c_str() };
+        PGresult* res = PQexecParams(conn_, sql, 3, nullptr, params, nullptr, nullptr, 0);
+        bool ok = res && PQresultStatus(res) == PGRES_COMMAND_OK
+                  && std::string(PQcmdTuples(res)) == "1";
+        if (res) PQclear(res);
+        return ok;
+    }
+
+    // List recent alerts, optionally filtered by disposition (for the labeling UI).
+    std::string query_alerts(int limit = 50, const std::string& disposition = "") {
+        if (!disposition.empty()) {
+            if (!is_valid_disposition(disposition)) return "[]";
+            const char* params[1] = { disposition.c_str() };
+            return query_json(
+                "SELECT id, device_id, timestamp_ms, machine_ip, source, category, "
+                "severity, mitre_id, description, disposition, analyst_id "
+                "FROM alert_history WHERE disposition = $1 "
+                "ORDER BY received_at DESC", 1, params, limit);
+        }
+        return query_json(
+            "SELECT id, device_id, timestamp_ms, machine_ip, source, category, "
+            "severity, mitre_id, description, disposition, analyst_id "
+            "FROM alert_history ORDER BY received_at DESC", 0, nullptr, limit);
+    }
+
     // Convenience: Count rows in a table
     int64_t count_table(const std::string& table) {
         if (!config_.enabled || !conn_) return 0;
@@ -690,6 +772,34 @@ private:
                  "ON fim_events (change_type, received_at DESC)");
         exec_sql("CREATE INDEX IF NOT EXISTS idx_fim_path "
                  "ON fim_events (file_path, received_at DESC)");
+
+        // Phase 30: persisted, analyst-labeled alert history. This is the one
+        // durable, labeled record the (future) supervised ML scorer will train
+        // on -- the in-memory engines cannot provide it. disposition is the
+        // label; it starts 'unset' and an analyst updates it via the REST API.
+        const char* alert_history_ddl =
+            "CREATE TABLE IF NOT EXISTS alert_history ("
+            "  id             BIGSERIAL PRIMARY KEY,"
+            "  device_id      INTEGER NOT NULL,"
+            "  timestamp_ms   BIGINT NOT NULL,"
+            "  machine_ip     VARCHAR(32),"
+            "  source         VARCHAR(64) NOT NULL,"   // traffic_classifier|threat_intel|fim|correlation|...
+            "  category       VARCHAR(64),"
+            "  severity       VARCHAR(16) NOT NULL,"
+            "  mitre_id       VARCHAR(32),"
+            "  description    VARCHAR(512),"
+            "  disposition    VARCHAR(24) NOT NULL DEFAULT 'unset',"  // unset|true_positive|false_positive|benign
+            "  analyst_id     VARCHAR(128),"
+            "  labeled_at     TIMESTAMPTZ,"
+            "  received_at    TIMESTAMPTZ DEFAULT NOW()"
+            ")";
+        if (exec_sql(alert_history_ddl)) {
+            log_msg("Schema OK: alert_history table ready.");
+        }
+        exec_sql("CREATE INDEX IF NOT EXISTS idx_alert_disposition "
+                 "ON alert_history (disposition, received_at DESC)");
+        exec_sql("CREATE INDEX IF NOT EXISTS idx_alert_device_ts "
+                 "ON alert_history (device_id, timestamp_ms DESC)");
 
         log_msg("Database schema verified with indexes.");
     }

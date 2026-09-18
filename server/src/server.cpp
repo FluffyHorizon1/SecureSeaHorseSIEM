@@ -98,6 +98,35 @@ static int  g_connection_timeout = 120;
 // Phase 4 stats
 static std::atomic<size_t> g_total_threats{0};
 
+// Phase 30: minimal JSON string-field extractor for REST bodies (no JSON dep).
+// Handles the escapes the dashboard/CLI actually send. Returns "" if absent.
+static std::string json_field(const std::string& body, const std::string& key) {
+    std::string needle = "\"" + key + "\"";
+    size_t k = body.find(needle);
+    if (k == std::string::npos) return "";
+    size_t colon = body.find(':', k + needle.size());
+    if (colon == std::string::npos) return "";
+    size_t i = colon + 1;
+    while (i < body.size() && (body[i]==' '||body[i]=='\t'||body[i]=='\n'||body[i]=='\r')) i++;
+    if (i >= body.size() || body[i] != '"') return "";
+    i++;
+    std::string out;
+    while (i < body.size() && body[i] != '"') {
+        if (body[i] == '\\' && i + 1 < body.size()) {
+            char n = body[i+1];
+            if      (n=='"')  out += '"';
+            else if (n=='\\') out += '\\';
+            else if (n=='/')  out += '/';
+            else if (n=='n')  out += '\n';
+            else if (n=='t')  out += '\t';
+            else if (n=='r')  out += '\r';
+            else              out += n;
+            i += 2;
+        } else { out += body[i++]; }
+    }
+    return out;
+}
+
 // PgStore log bridge
 void PgStore::log_msg(const std::string& msg, bool is_error) {
     if (logger_) logger_->log(is_error ? AsyncLogger::ERROR_LOG : AsyncLogger::INFO, "[DB] " + msg);
@@ -367,6 +396,11 @@ void process_report(RawTelemetry& current) {
                         t.category, t.sub_type, t.severity, t.confidence,
                         t.mitre_id, t.mitre_name, t.mitre_tactic,
                         t.description, t.evidence);
+                    // Phase 30: mirror into the labeled alert-history substrate.
+                    pg_store->insert_alert(
+                        t.device_id, t.timestamp_ms, t.machine_ip.c_str(),
+                        "traffic_classifier", t.category, t.severity,
+                        t.mitre_id, t.description);
                 }
 
                 // Log to server log
@@ -438,6 +472,11 @@ void process_report(RawTelemetry& current) {
                         m.ioc.mitre_id,
                         m.ioc.description,
                         m.ioc.tags);
+                    // Phase 30: mirror into the labeled alert-history substrate.
+                    pg_store->insert_alert(
+                        current.device_id, current.timestamp_ms, current.machine_ip,
+                        "threat_intel", "ioc_match", m.ioc.severity,
+                        m.ioc.mitre_id, m.ioc.description);
                 }
 
                 // Log to server log
@@ -1491,6 +1530,32 @@ int main(int argc, char* argv[]) {
                 if (!correlator) return HttpResponse::json("[]");
                 int limit = clamp_limit(req.get_param_int("limit", 50));
                 return HttpResponse::json(correlator->incidents_to_json(limit));
+            });
+
+            // --- Phase 30: labeled alert history (substrate for supervised ML) ---
+            // List alerts, optionally filtered by disposition, for the labeling UI.
+            rest_server->get("/api/alerts", [clamp_limit](const HttpRequest& req) {
+                if (!pg_store) return HttpResponse::json("[]");
+                int limit = clamp_limit(req.get_param_int("limit", 50));
+                std::string disp = req.get_param("disposition", "");
+                return HttpResponse::json(pg_store->query_alerts(limit, disp));
+            });
+
+            // Record an analyst's disposition (the label). Body:
+            //   {"id":"123","disposition":"true_positive","analyst":"alice"}
+            rest_server->post("/api/alerts/disposition", [](const HttpRequest& req) {
+                if (!pg_store) return HttpResponse::error(503, "DB disabled");
+                std::string id      = json_field(req.body, "id");
+                std::string disp    = json_field(req.body, "disposition");
+                std::string analyst = json_field(req.body, "analyst");
+                if (id.empty() || disp.empty())
+                    return HttpResponse::error(400, "id and disposition required");
+                if (!PgStore::is_valid_disposition(disp))
+                    return HttpResponse::error(400,
+                        "disposition must be one of: unset, true_positive, false_positive, benign");
+                if (!pg_store->set_alert_disposition(id, disp, analyst))
+                    return HttpResponse::error(404, "alert not found or update failed");
+                return HttpResponse::json("{\"ok\":true}");
             });
 
             if (rest_server->start()) {
