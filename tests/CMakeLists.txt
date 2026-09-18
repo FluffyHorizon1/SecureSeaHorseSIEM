@@ -10,6 +10,7 @@ set(SEAHORSE_TESTS
     test_deserializers
     test_config
     test_json_escape
+    test_hunt
 )
 
 foreach(t ${SEAHORSE_TESTS})

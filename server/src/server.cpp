@@ -66,6 +66,7 @@ using SOCKET = int;
 #include "software_inventory.h"   // Phase 14: Software report handling
 #include "correlation_engine.h"   // Phase 15: Cross-device correlation
 #include "rbac.h"                 // Phase 20/31: RBAC, JWT auth, PBKDF2, tenants
+#include "hunt_query.h"           // Phase 23/33: Hunt DSL -> parameterised SQL
 
 // =============================================================================
 // GLOBAL CONTROL
@@ -1658,6 +1659,47 @@ int main(int argc, char* argv[]) {
                 if (!pg_store->set_alert_disposition(id, disp, analyst))
                     return HttpResponse::error(404, "alert not found or update failed");
                 return HttpResponse::json("{\"ok\":true}");
+            });
+
+            // --- Phase 23/33: Hunt DSL ---
+            // Compiles the one-line DSL to a parameterised SQL plan (field
+            // allowlist + $N binds enforced in hunt_query.h -- no user SQL is
+            // ever concatenated) and executes it. analyst+ when RBAC is enabled.
+            rest_server->post("/api/hunt", [clamp_limit](const HttpRequest& req) {
+                if (!rbac_require(req, Role::ANALYST))
+                    return HttpResponse::error(403, "analyst role required");
+                std::string q = json_field(req.body, "query");
+                if (q.empty()) return HttpResponse::error(400, "query required");
+                int limit = clamp_limit(req.get_param_int("limit", 100));
+
+                HuntResult r = compile_hunt(q);
+                if (!r.ok) return HttpResponse::error(400, r.error.c_str());
+
+                // Execute the compiled plan with bound parameters.
+                if (pg_store && pg_store->is_connected()) {
+                    std::vector<const char*> pc;
+                    pc.reserve(r.compiled.params.size());
+                    for (const auto& p : r.compiled.params) pc.push_back(p.c_str());
+                    std::string exec_json = pg_store->query_json(
+                        r.compiled.sql.c_str(),
+                        static_cast<int>(r.compiled.params.size()),
+                        pc.empty() ? nullptr : pc.data(),
+                        limit);
+                    if (!exec_json.empty()) return HttpResponse::json(exec_json);
+                }
+
+                // DB offline / empty: return the compiled SQL + params as a
+                // preview so the analyst still sees what was planned.
+                std::string params_json = "[";
+                for (size_t i = 0; i < r.compiled.params.size(); i++) {
+                    if (i) params_json += ",";
+                    params_json += "\"" + HttpResponse::json_escape(r.compiled.params[i]) + "\"";
+                }
+                params_json += "]";
+                return HttpResponse::json(
+                    std::string("{\"ok\":true,\"executed\":false,\"sql\":\"")
+                    + HttpResponse::json_escape(r.compiled.sql)
+                    + "\",\"params\":" + params_json + "}");
             });
 
             // --- Phase 20/31: authentication endpoints ---
