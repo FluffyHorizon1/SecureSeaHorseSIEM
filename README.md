@@ -1,4 +1,4 @@
-# 🐴 SecureSeaHorse SIEM v5.1.0 — split layout
+# 🐴 SecureSeaHorse SIEM v5.1.1 — split layout
 
 Two fully independent programs in one repo. Each folder builds on its own —
 no shared build, no shared CMake, no cross-folder includes.
@@ -9,7 +9,7 @@ SecureSeaHorse/
 ├── client/          # Endpoint telemetry agent → binary: SeaHorseClient
 ├── installer/       # Linux + Windows installers (build both programs)
 ├── docs/            # User manual + phase changelogs
-├── CHANGELOG.md     # v1.0.1 → v5.0.0 history with rationale
+├── CHANGELOG.md     # v1.0.1 → v5.1.1 history with rationale
 ├── ROADMAP.md       # v5.x → v10 plan
 ├── LICENSE
 └── .gitignore

@@ -9,6 +9,37 @@ break. `MINOR` jumps add features. `PATCH` is defensive-only.
 
 ---
 
+## [5.1.1] — 2026-11-25 — Windows CI Fix & Docs Truth-Up
+
+**Headline.** Patch release restoring the Windows vcpkg CI build, unifying
+client and server version reporting under `VERSION`, and aligning `ROADMAP.md`,
+READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
+
+### Fixed
+- **Windows CI build (`tests/`).** Set `CMAKE_CXX_STANDARD 17` at the root
+  superbuild and `cxx_std_17` on test targets so MSVC compiles structured
+  bindings in `test_config` and `test_json_escape`.
+- **Winsock header ordering.** Added `WIN32_LEAN_AND_MEAN` guards before
+  `<windows.h>` in `process_monitor.h`, `session_tracker.h`, and
+  `software_inventory.h` (both `server/src` and `client/src`) plus MSVC test
+  compile definitions so `test_deserializers` no longer hits `<winsock.h>` vs
+  `<winsock2.h>` redefinition errors.
+- **Port, certificate, and config key truth-up.** Corrected `docs/USER_MANUAL.md`
+  and `installer/installer_windows.nsi` from port `9443` to `65432` (matching
+  `DEFAULT_PORT` and `server.conf`/`client.conf`), fixed config key names
+  (`port`, `server_ip`, `server_crt`/`server_key`/`ca_path`, `pool_*`, `db_*`,
+  `rest_bind = 127.0.0.1`), aligned `install_linux.sh certs` output names
+  (`.crt`/`.key`), and scrubbed stale `changeme-*` example values from docs.
+
+### Changed
+- Wired `SEAHORSE_VERSION` from `VERSION` into `client/CMakeLists.txt` and
+  `client/src/client.cpp` and added a `SeaHorseClient --version` check to CI.
+- Updated `ROADMAP.md`, `server/README.md`, `client/README.md`,
+  `client/config/client.conf`, and `LICENSE` to `5.1.1` and marked wired vs
+  planned modules accurately.
+
+---
+
 ## [5.1.0] — 2026-09-18 — Consolidation & Hardening
 
 **Headline.** v5.1 makes the repository build from a clean clone, closes the

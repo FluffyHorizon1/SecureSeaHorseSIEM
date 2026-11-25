@@ -1,9 +1,9 @@
 # SecureSeaHorse SIEM — Roadmap
 
-_Last updated: 2026-04-22, anchored to v5.0.0._
+_Last updated: 2026-11-25, anchored to v5.1.1._
 
-This roadmap is forward-looking from the v5.0.0 release. For the history
-of everything up to and including v5, see `CHANGELOG.md`.
+This roadmap is forward-looking from the v5.1.1 release. For the history
+of everything up to and including v5.1.1, see `CHANGELOG.md` and `docs/ROADMAP_v5.1.md`.
 
 Every line has a one-line rationale. We treat the roadmap as a
 promissory hint, not a contract — timing slips on every serious SIEM
@@ -13,82 +13,69 @@ version), `P1` (committed), `P2` (planned), `P3` (exploratory).
 
 ---
 
-## Done @ v5.0.0 (current)
+## Done @ v5.1.1 (current)
 
-Everything from phases 1 through 25 is live. High-level feature surface:
+Phases 1–15 plus the hardened v5.1 modules (Phases 26–31, 33–34) are live
+in the buildable codebase. Unwired Phase 16–19, 21–22, 25 stubs remain
+clearly marked `PLANNED` in `server/config/server.conf` and `client/config/client.conf`.
 
-- **Collection.** mTLS telemetry agent (Windows / Linux), FIM,
-  process / connection / session / software inventory, USB monitor.
-- **Analysis.** Regex + threshold alerting, Sigma rule engine, 6-category
-  traffic classifier with MITRE tags, 7-type threat-intel feeds, deep
-  network inspection (DNS/proto/entropy), ML anomaly detection
-  (isolation forest + beaconing scorer).
-- **Correlation & response.** 7 cross-device correlation rules,
-  IR engine with 7 playbooks and 7 action types, bidirectional SOAR
-  connectors.
-- **Multi-tenant.** JWT auth with 4 roles, per-tenant data isolation,
-  audit log.
-- **Edge ingest.** Passive syslog listener (UDP 514 / TCP-TLS 6514).
-- **Egress.** CEF / LEEF / RFC 5424 upstream forwarder.
-- **Hunt.** DSL-compiled parameterized queries with saved searches.
-- **UI.** React SPA with WebSocket live stream across 6 channels.
-- **Operations.** Scheduled PCI / HIPAA / SOC 2 / exec-summary reports,
-  signed auto-update channel, tamper-resistant agent.
+- **Collection.** mTLS telemetry agent on port `65432` (Windows / Linux,
+  protocol v2 HMAC-SHA256), FIM, process / connection / session / software
+  inventory.
+- **Analysis.** Regex + threshold alerting, 6-category traffic classifier
+  with MITRE ATT&CK tags, 7-type threat-intel feeds, deep network inspection
+  (DNS/proto/entropy), unsupervised ML anomaly detection (isolation forest +
+  beaconing scorer at `GET /api/anomalies`).
+- **Correlation & response.** 7 cross-device correlation rules, IR engine
+  with 7 playbooks and 7 action types, fleet staleness tracking.
+- **Persistence & Auth.** PostgreSQL `libpq` layer with labeled
+  `alert_history` (`GET /api/alerts`, `POST /api/alerts/disposition`),
+  PBKDF2-HMAC-SHA256 + JWT RBAC (`rbac_enabled`, `--create-admin`,
+  `/api/auth/login`, `/api/auth/me`), fail-closed loopback REST API on port
+  `8080`.
+- **Hunt.** Parameterized Hunt DSL (`POST /api/hunt`, field allowlist +
+  `$N` SQL binding).
+- **UI & Build.** Embedded HTML dashboard (`dashboard_html.h`), Linux +
+  Windows CMake superbuild, 6 CTest regression suites, GitHub Actions CI.
 
 ---
 
 ## Near-term — v5.x (patch + minor)
 
 Small, incremental improvements, all backward-compatible on the wire
-and in the DB. Targeting monthly cadence.
+and in the DB. Ordered by priority for design-partner and hosted-service readiness.
 
-### v5.1 — hunt + UI polish (P1, ~6 weeks)
+### v5.1.1 — Windows CI + docs truth-up (shipped)
 
-- **Hunt DSL: `join` on device_id.** Rationale: the #1 question we hear
-  from early-access tenants is "show me threats + fleet metadata in one
-  table" and today that's two round-trips.
-- **Saved-search sharing across a tenant.** Rationale: analysts today
-  have to paste queries into Slack; a "share to tenant" button removes
-  the middleman.
-- **Dashboard: keyboard-navigable incident timeline.** Rationale: every
-  seasoned analyst we shadowed used keyboard-only; the Phase 25 SPA
-  currently forces mouse for correlation drill-down.
-- **Per-user alert mute rules.** Rationale: analysts triaging a known
-  noisy source shouldn't have to open a playbook config.
+- **Windows vcpkg CI green.** Root C++17 standard propagation and
+  `WIN32_LEAN_AND_MEAN` header hygiene so MSVC builds and passes all CTests.
+- **Version & docs truth-up.** Unified `VERSION` across server + client
+  binaries, corrected port (`65432`) and config keys across `docs/USER_MANUAL.md`
+  and installers, and separated wired vs planned features.
 
-### v5.2 — Sigma completeness (P1, ~6 weeks)
+### v5.2 — Hosted multi-tenant readiness & core engines (in priority order)
 
-- **Sigma: `|cidr`, `|base64offset`, `|endswith`, `|startswith` modifiers.**
-  Rationale: right now we gracefully skip rules that use these; coverage
-  surveys show it's ~8% of the community corpus — enough to matter.
-- **Sigma: nested `count()` aggregation.** Rationale: bridges the gap
-  between Sigma and our Phase 2 threshold rules so users stop
-  maintaining both.
-- **Sigma rule-pack auto-update.** Rationale: teams today have to `git
-  pull` a sigma fork manually; ship a signed feed like the threat-intel
-  feeds have since v1.5.
-
-### v5.3 — ML calibration (P2, ~8 weeks)
-
-- **Per-tenant isolation-forest thresholds.** Rationale: v5.0 uses a
-  global `ml_alert_score_min`; a noisy tenant drowns out a quiet one.
-- **Feedback loop: "mark as false positive" retrains within 24 h.**
-  Rationale: today the model has no way to learn from analyst
-  corrections.
-- **Beaconing detector: protocol-aware period buckets.** Rationale: DNS
-  and HTTPS beacons have different natural cadences; treating them with
-  one histogram bucket blurs both.
-
-### v5.4 — Operational quality (P2)
-
-- **Postgres logical replication for historical events.** Rationale:
-  large tenants keep 13 months of events for compliance and today run
-  out of disk; offload to a read replica.
-- **Columnar cold-storage adapter (Parquet on S3/MinIO).** Rationale:
-  same problem, cheaper storage; analysts usually only care about
-  cold data for audits.
-- **IR playbook dry-run mode.** Rationale: teams don't trust automation
-  they can't rehearse; dry-run logs every decision without executing.
+1. **Sigma YAML engine (P0 — Phase 32).** Harden `sigma_engine.h` mini-YAML
+   parser (folded scalars, keyword-list selections, `|cidr`/`|endswith`/
+   `|startswith`), wire `sigma/*.yml` into the live pipeline, and add
+   regression tests. Rationale: unlocks community detection rules without
+   hand-coding regexes.
+2. **Full RBAC coverage & default-on multi-tenancy (P0 — Security).**
+   Enforce per-route RBAC and `tenant_id` scoping across all legacy read/write
+   endpoints (including WebSocket/export routes), turn `rbac_enabled = true`
+   by default for hosted deployments, remove empty-token loopback bypass for
+   sensitive operations, and add tenant-isolation tests + rate limiting +
+   structured audit logging. Rationale: mandatory for multi-tenant SaaS
+   hosting with real design partners.
+3. **ML calibration & precision (P1).** Per-feature normalization, per-tenant
+   isolation-forest thresholds, and an analyst false-positive feedback loop
+   on `alert_history`. Rationale: widens outlier/normal score separation and
+   prevents noisy tenants from masking quiet ones.
+4. **UI & hunt polish (P2).** Hunt DSL `join` on `device_id`, tenant-shared
+   saved searches, keyboard-navigable incident timeline, per-user alert mute
+   rules, and completing remaining unwired stubs (WebSocket live stream,
+   syslog ingestor/forwarder, compliance reports, USB, SOAR, signed agent
+   updates) as scoped.
 
 ---
 
