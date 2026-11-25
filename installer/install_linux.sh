@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# SecureSeaHorse SIEM v5.0.0 -- Linux Installer
+# SecureSeaHorse SIEM v5.1.1 -- Linux Installer
 # =============================================================================
 # Usage:
 #   sudo ./install_linux.sh server    # Install server only
@@ -13,7 +13,7 @@
 
 set -e
 
-VERSION="5.0.0"
+VERSION="5.1.1"
 PREFIX="/opt/seahorse"
 SERVICE_USER="seahorse"
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -106,7 +106,7 @@ install_server() {
     fi
     [ ! -f "$PREFIX/server/config/rules.conf" ] && cp "$SCRIPT_DIR/server/config/rules.conf" "$PREFIX/server/config/"
 
-    # v5.0.0 runtime data: sigma rules, feed samples, USB whitelist, update manifest
+    # v5.1.1 runtime data: sigma rules, feed samples, USB whitelist, update manifest
     mkdir -p "$PREFIX/server/config/sigma" "$PREFIX/server/updates"
     cp -n "$SCRIPT_DIR/server/config/sigma/"*.yml "$PREFIX/server/config/sigma/" 2>/dev/null || true
     cp -n "$SCRIPT_DIR/server/feeds/"*.csv "$PREFIX/server/config/feeds/" 2>/dev/null || true
@@ -184,7 +184,7 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    log "Client installed. Next: place certs + set server_host, then: systemctl enable --now seahorse-client"
+    log "Client installed. Next: place certs + set server_ip, then: systemctl enable --now seahorse-client"
 }
 
 do_uninstall() {
@@ -211,28 +211,28 @@ generate_certs() {
     mkdir -p "$CERT_DIR"
 
     openssl req -x509 -newkey rsa:4096 -days 365 -nodes \
-        -keyout "$CERT_DIR/ca-key.pem" -out "$CERT_DIR/ca.pem" \
+        -keyout "$CERT_DIR/ca.key" -out "$CERT_DIR/ca.crt" \
         -subj "/CN=SeaHorse-CA/O=SecureSeaHorse/C=US" 2>/dev/null
 
     openssl req -newkey rsa:2048 -nodes \
-        -keyout "$CERT_DIR/server-key.pem" -out "$CERT_DIR/server.csr" \
+        -keyout "$CERT_DIR/server.key" -out "$CERT_DIR/server.csr" \
         -subj "/CN=seahorse-server/O=SecureSeaHorse/C=US" 2>/dev/null
     openssl x509 -req -in "$CERT_DIR/server.csr" \
-        -CA "$CERT_DIR/ca.pem" -CAkey "$CERT_DIR/ca-key.pem" \
-        -CAcreateserial -days 365 -out "$CERT_DIR/server.pem" 2>/dev/null
+        -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" \
+        -CAcreateserial -days 365 -out "$CERT_DIR/server.crt" 2>/dev/null
 
     openssl req -newkey rsa:2048 -nodes \
-        -keyout "$CERT_DIR/client-key.pem" -out "$CERT_DIR/client.csr" \
+        -keyout "$CERT_DIR/client.key" -out "$CERT_DIR/client.csr" \
         -subj "/CN=seahorse-client/O=SecureSeaHorse/C=US" 2>/dev/null
     openssl x509 -req -in "$CERT_DIR/client.csr" \
-        -CA "$CERT_DIR/ca.pem" -CAkey "$CERT_DIR/ca-key.pem" \
-        -CAcreateserial -days 365 -out "$CERT_DIR/client.pem" 2>/dev/null
+        -CA "$CERT_DIR/ca.crt" -CAkey "$CERT_DIR/ca.key" \
+        -CAcreateserial -days 365 -out "$CERT_DIR/client.crt" 2>/dev/null
 
     rm -f "$CERT_DIR"/*.csr "$CERT_DIR"/*.srl
-    chmod 600 "$CERT_DIR"/*.pem
+    chmod 600 "$CERT_DIR"/*.key "$CERT_DIR"/*.crt
 
-    [ -d "$PREFIX/server/certs" ] && cp "$CERT_DIR"/{ca,server,server-key}.pem "$PREFIX/server/certs/" && chown -R "$SERVICE_USER:$SERVICE_USER" "$PREFIX/server/certs/"
-    [ -d "$PREFIX/client/certs" ] && cp "$CERT_DIR"/{ca,client,client-key}.pem "$PREFIX/client/certs/"
+    [ -d "$PREFIX/server/certs" ] && cp "$CERT_DIR"/ca.crt "$CERT_DIR"/server.crt "$CERT_DIR"/server.key "$PREFIX/server/certs/" && chown -R "$SERVICE_USER:$SERVICE_USER" "$PREFIX/server/certs/"
+    [ -d "$PREFIX/client/certs" ] && cp "$CERT_DIR"/ca.crt "$CERT_DIR"/client.crt "$CERT_DIR"/client.key "$PREFIX/client/certs/"
 
     log "Certs generated in $CERT_DIR"
     warn "Self-signed certificates are for TESTING ONLY."

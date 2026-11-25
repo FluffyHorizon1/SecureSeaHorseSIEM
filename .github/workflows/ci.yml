@@ -38,6 +38,8 @@ jobs:
           echo "VERSION file: $VER"
           ./build/server/SeaHorseServer --version | grep -q "v$VER" \
             || { echo "server --version does not match VERSION ($VER)"; exit 1; }
+          ./build/client/SeaHorseClient --version | grep -q "v$VER" \
+            || { echo "client --version does not match VERSION ($VER)"; exit 1; }
           grep -q "v$VER" server/src/dashboard_html.h \
             || { echo "dashboard_html.h version does not match VERSION ($VER)"; exit 1; }
           echo "version consistent across VERSION, banner, dashboard"
