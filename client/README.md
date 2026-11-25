@@ -1,16 +1,19 @@
-# SeaHorseClient v5.0.0
+# SeaHorseClient v5.1.1
 
 Endpoint telemetry agent. Standalone program — builds independently of the
 server, no database dependency.
 
 ## What it does
 
-Collects and ships to the server over mTLS (protocol v2, HMAC-signed):
-system telemetry + log chunks, file-integrity snapshots (SHA-256), process
-inventory with suspicious-tool detection, TCP/UDP connection inventory,
-user session + auth events, installed-software inventory, and USB
-attach/detach events. Phase 17 self-protection adds a watchdog, self-hash
-verification, and signed auto-update.
+**Live in v5.1.1:** Collects and ships to the server over mTLS (`port 65432`,
+protocol v2, HMAC-SHA256): system telemetry + log chunks, file-integrity
+snapshots (SHA-256), process inventory with suspicious-tool detection, TCP/UDP
+connection inventory, user session + auth events, and installed-software
+inventory.
+
+**Planned / not yet wired in v5.1.1:** Phase 17 self-protection watchdog /
+signed auto-update and Phase 19 USB attach/detach reporting (`usb_monitor.h`)
+exist as headers and are not yet wired into `client.cpp`.
 
 ## Dependencies
 
@@ -49,7 +52,7 @@ config is staged into the build directory at configure time.
 ```
 client/
 ├── CMakeLists.txt
-├── src/                    # client.cpp + 10 headers (self-contained)
-├── config/client.conf      # all agent modules documented inline
+├── src/                    # client.cpp + headers (self-contained)
+├── config/client.conf      # WIRED vs PLANNED sections marked
 └── certs/                  # put ca/client certs here (gitignored)
 ```
