@@ -4,7 +4,7 @@
 Version 5.0 | Effective Date: July 29, 2026
 Copyright (c) 2024-2026 Secured Cyber Solutions Limited. All rights reserved.
 
-This Agreement governs the use of SecureSeaHorse SIEM v5.0.0 and all earlier
+This Agreement governs the use of SecureSeaHorse SIEM v5.1.1 and all earlier
 versions. It supersedes Version 3.1 (April 22, 2026) and Version 1.0
 (February 10, 2026) in their entirety.
 
@@ -122,7 +122,7 @@ SecureSeaHorse ecosystem, the following actions are strictly prohibited:
        subsystem, the signed-update signature verification, the agent
        self-protection watchdog and self-hash controls, HTML escaping in
        the web dashboard, or the input-validation caps introduced in
-       v3.1.1 and extended through v5.0.0 (HTTP parser limits, regex and
+       v3.1.1 and extended through v5.1.1 (HTTP parser limits, regex and
        Sigma loader caps, feed loader caps, Hunt DSL row caps and
        statement timeouts, SQL parameter clamping) is a material breach
        of this license.
@@ -365,7 +365,7 @@ Upon termination:
 12. UPDATES & SUPPORT
 -------------------------------------------------------------------------------
 This Agreement covers the version of the Software with which it is
-distributed (v5.0.0) and any prior versions. Future releases may be
+distributed (v5.1.1) and any prior versions. Future releases may be
 governed by separate terms.
 
 Nothing in this Agreement obligates Secured Cyber Solutions Limited to
@@ -420,5 +420,5 @@ please contact:
 
 ===============================================================================
                             END OF AGREEMENT
-                  SecureSeaHorse SIEM v5.0.0 - July 2026
+                  SecureSeaHorse SIEM v5.1.1 - November 2026
 ===============================================================================

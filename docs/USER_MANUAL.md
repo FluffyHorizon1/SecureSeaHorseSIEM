@@ -1,4 +1,4 @@
-# SecureSeaHorse SIEM v5.0.0 -- User Manual
+# SecureSeaHorse SIEM v5.1.1 -- User Manual
 
 ---
 
@@ -80,7 +80,7 @@ Key capabilities include real-time traffic classification, threat intelligence f
 | CPU | 1 core |
 | RAM | 256 MB |
 | Disk | 50 MB |
-| Network | TCP connectivity to server on port 9443 |
+| Network | TCP connectivity to server on port 65432 |
 
 ---
 
@@ -91,7 +91,7 @@ Key capabilities include real-time traffic classification, threat intelligence f
 The project uses CMake. The folder structure is:
 
 ```
-SecureSeaHorse-v5.0.0/
+SecureSeaHorseSIEM/
   CMakeLists.txt
   src/
     server.cpp           # Server main
@@ -131,10 +131,10 @@ SecureSeaHorse-v5.0.0/
 **Build steps:**
 
 ```bash
-cd SecureSeaHorse-v5.0.0
+cd SecureSeaHorseSIEM
 mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-make -j$(nproc)    # Linux/macOS
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j
 # or: cmake --build . --config Release   # Windows
 ```
 
@@ -186,13 +186,13 @@ sudo systemctl status seahorse-server
 1. Build the project first with Visual Studio or CMake.
 2. Place `SeaHorseServer.exe` and `SeaHorseClient.exe` into a `build/` directory.
 3. Run NSIS compiler: `makensis installer/installer_windows.nsi`
-4. Execute the generated `SecureSeaHorse-v5.0.0-Setup.exe`.
+4. Execute the generated `SecureSeaHorseSIEM-Setup.exe`.
 5. Choose which components to install (Server, Client, or both).
 
 The installer:
 - Installs to `C:\Program Files\SecureSeaHorse\`
 - Creates Windows services (SeaHorseServer, SeaHorseClient)
-- Adds firewall rules for ports 9443 and 8080
+- Adds firewall rules for ports 65432 and 8080
 - Creates Start Menu shortcuts
 
 **Option B: Manual Installation**
@@ -215,24 +215,24 @@ SecureSeaHorse uses mutual TLS (mTLS). Both server and client must present certi
 ```bash
 # 1. Create CA
 openssl req -x509 -newkey rsa:4096 -days 365 -nodes \
-  -keyout ca-key.pem -out ca.pem \
+  -keyout ca.key -out ca.crt \
   -subj "/CN=SeaHorse-CA/O=YourOrg"
 
 # 2. Create server certificate
 openssl req -newkey rsa:2048 -nodes \
-  -keyout server-key.pem -out server.csr \
+  -keyout server.key -out server.csr \
   -subj "/CN=seahorse-server"
 openssl x509 -req -in server.csr \
-  -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
-  -days 365 -out server.pem
+  -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -days 365 -out server.crt
 
 # 3. Create client certificate
 openssl req -newkey rsa:2048 -nodes \
-  -keyout client-key.pem -out client.csr \
+  -keyout client.key -out client.csr \
   -subj "/CN=seahorse-client"
 openssl x509 -req -in client.csr \
-  -CA ca.pem -CAkey ca-key.pem -CAcreateserial \
-  -days 365 -out client.pem
+  -CA ca.crt -CAkey ca.key -CAcreateserial \
+  -days 365 -out client.crt
 
 # 4. Clean up CSRs
 rm -f *.csr *.srl
@@ -242,11 +242,11 @@ rm -f *.csr *.srl
 
 | File | Server Location | Client Location |
 |---|---|---|
-| `ca.pem` | `certs/ca.pem` | `certs/ca.pem` |
-| `server.pem` | `certs/server.pem` | -- |
-| `server-key.pem` | `certs/server-key.pem` | -- |
-| `client.pem` | -- | `certs/client.pem` |
-| `client-key.pem` | -- | `certs/client-key.pem` |
+| `ca.crt` | `certs/ca.crt` | `certs/ca.crt` |
+| `server.crt` | `certs/server.crt` | -- |
+| `server.key` | `certs/server.key` | -- |
+| `client.crt` | -- | `certs/client.crt` |
+| `client.key` | -- | `certs/client.key` |
 
 Or use the automated installer: `sudo ./installer/install_linux.sh certs`
 
@@ -262,29 +262,28 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 
 | Key | Default | Description |
 |---|---|---|
-| `tls_port` | `9443` | Port for mTLS agent connections |
-| `tls_bind` | `0.0.0.0` | Bind address |
-| `cert_file` | `certs/server.pem` | Server TLS certificate |
-| `key_file` | `certs/server-key.pem` | Server TLS private key |
-| `ca_file` | `certs/ca.pem` | CA certificate for client verification |
+| `port` | `65432` | Port for mTLS agent connections |
+| `server_crt` | `certs/server.crt` | Server TLS certificate |
+| `server_key` | `certs/server.key` | Server TLS private key |
+| `ca_path` | `certs/ca.crt` | CA certificate for client verification |
 
 #### Thread Pool
 
 | Key | Default | Description |
 |---|---|---|
-| `thread_pool_min` | `4` | Minimum worker threads |
-| `thread_pool_max` | `32` | Maximum worker threads |
+| `pool_min` | `2` | Minimum worker threads |
+| `pool_max` | `32` | Maximum worker threads |
 
 #### PostgreSQL (Optional)
 
 | Key | Default | Description |
 |---|---|---|
-| `pg_enabled` | `false` | Enable PostgreSQL persistence |
-| `pg_host` | `localhost` | Database host |
-| `pg_port` | `5432` | Database port |
-| `pg_dbname` | `seahorse` | Database name |
-| `pg_user` | `seahorse` | Database user |
-| `pg_password` | _(empty)_ | Database password |
+| `db_enabled` | `true` | Enable PostgreSQL persistence (falls back to CSV) |
+| `db_host` | `127.0.0.1` | Database host |
+| `db_port` | `5432` | Database port |
+| `db_name` | `seahorse` | Database name |
+| `db_user` | `seahorse` | Database user |
+| `db_pass` | _(empty)_ | Database password |
 
 #### Phase 4: Traffic Classification
 
@@ -297,8 +296,8 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 | Key | Default | Description |
 |---|---|---|
 | `threat_intel_enabled` | `true` | Enable IoC feed matching |
-| `threat_intel_dir` | `config/feeds` | Directory containing CSV/JSON feed files |
-| `threat_intel_reload_s` | `3600` | Reload interval in seconds |
+| `feeds_dir` | `feeds` | Directory containing CSV feed files |
+| `feeds_reload_interval_s` | `300` | Reload interval in seconds |
 
 #### Phase 6: FIM (Server-side)
 
@@ -313,8 +312,9 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 |---|---|---|
 | `rest_enabled` | `true` | Enable REST API server |
 | `rest_port` | `8080` | REST API port |
-| `rest_bind` | `0.0.0.0` | REST API bind address |
-| `rest_api_token` | `changeme-seahorse-token-2026` | Bearer token for API auth |
+| `rest_bind` | `127.0.0.1` | REST API bind address (loopback default; requires strong token if non-loopback) |
+| `rest_api_token` | _(empty)_ | Bearer token for API auth (required when `rest_bind` is non-loopback) |
+| `rest_cors_origin` | _(empty)_ | Allowed CORS origin (empty = same-origin only; never use `*` with tokens) |
 
 #### Phase 8: Incident Response
 
@@ -354,12 +354,12 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 
 | Key | Default | Description |
 |---|---|---|
-| `server_host` | `127.0.0.1` | Server hostname or IP |
-| `server_port` | `9443` | Server TLS port |
+| `server_ip` | `127.0.0.1` | Server hostname or IP |
+| `port` | `65432` | Server TLS port |
 | `device_id` | `7001` | Unique device ID (must be unique per agent) |
-| `cert_file` | `certs/client.pem` | Client TLS certificate |
-| `key_file` | `certs/client-key.pem` | Client TLS private key |
-| `ca_file` | `certs/ca.pem` | CA certificate for server verification |
+| `client_crt` | `certs/client.crt` | Client TLS certificate |
+| `client_key` | `certs/client.key` | Client TLS private key |
+| `ca_path` | `certs/ca.crt` | CA certificate for server verification |
 
 #### Telemetry
 
@@ -367,7 +367,7 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 |---|---|---|
 | `report_interval_s` | `30` | Telemetry report interval in seconds |
 | `heartbeat_interval_s` | `15` | Heartbeat interval |
-| `heartbeat_timeout_s` | `60` | Heartbeat timeout before reconnect |
+| `heartbeat_timeout_s` | `45` | Heartbeat timeout before reconnect |
 
 #### Log Collection
 
@@ -451,14 +451,14 @@ description = Root login detected
 **Step 1: Generate certificates**
 
 ```bash
-cd SecureSeaHorse-v5.0.0
+cd SecureSeaHorseSIEM
 sudo ./installer/install_linux.sh certs
 # Or generate manually (see Section 3.4)
 ```
 
 **Step 2: Configure the server**
 
-Edit `config/server.conf`. At minimum, verify the TLS certificate paths are correct. Change the REST API token:
+Edit `server/config/server.conf`. At minimum, verify the TLS certificate paths are correct. Change the REST API token:
 
 ```ini
 rest_api_token = your-secret-token-here
@@ -467,13 +467,13 @@ rest_api_token = your-secret-token-here
 **Step 3: Start the server**
 
 ```bash
-./build/SeaHorseServer --config config/server.conf
+./build/server/SeaHorseServer --config server/config/server.conf
 ```
 
 You should see startup output:
 
 ```
-=== SecureSeaHorse Server v5.0.0 (Phase 25) starting ===
+=== SecureSeaHorse Server v5.1.1 starting ===
 [INFO] Traffic Classifier: ENABLED | 6 categories loaded
 [INFO] Threat Intel: ENABLED | 0 IoCs loaded
 [INFO] FIM Monitor: ENABLED
@@ -482,27 +482,27 @@ You should see startup output:
 [INFO] Fleet Manager: ENABLED | stale=300s offline=900s
 [INFO] Network Inspector: ENABLED
 [INFO] Correlation Engine: ENABLED | 7 rules loaded
-[INFO] Listening on 0.0.0.0:9443 (TLS)
+[INFO] Listening on 0.0.0.0:65432 (TLS)
 ```
 
 **Step 4: Configure the client**
 
-Edit `config/client.conf`. Set the server address:
+Edit `client/config/client.conf`. Set the server address:
 
 ```ini
-server_host = 192.168.1.100    # Your server IP
+server_ip = 192.168.1.100      # Your server IP
 device_id = 7001                # Unique per agent
 ```
 
 **Step 5: Start the client**
 
 ```bash
-./build/SeaHorseClient --config config/client.conf
+./build/client/SeaHorseClient --config client/config/client.conf
 ```
 
 **Step 6: Open the dashboard**
 
-Navigate to `http://your-server-ip:8080/` in a web browser. Enter your API token to log in. The dashboard will show live data once agents connect.
+Navigate to `http://127.0.0.1:8080/` in a web browser. Enter your API token to log in. The dashboard will show live data once agents connect.
 
 ---
 
@@ -511,7 +511,7 @@ Navigate to `http://your-server-ip:8080/` in a web browser. Enter your API token
 ```
 Monitored Endpoints                     SIEM Server
 +-------------------+                  +---------------------------+
-| SeaHorse Client   |  mTLS (9443)     | SeaHorse Server           |
+| SeaHorse Client   |  mTLS (65432)     | SeaHorse Server           |
 |                   | ===============> |                           |
 | System Metrics    |  Binary Protocol | Thread Pool               |
 | Log Collection    |                  | Protocol Handler          |
@@ -791,7 +791,7 @@ Back up the following:
 
 For large deployments (100+ agents):
 
-- Increase `thread_pool_max` to match expected concurrent connections.
+- Increase `pool_max` to match expected concurrent connections.
 - Set `report_interval_s` to 60 or higher to reduce server load.
 - Increase `software_scan_interval_s` to 7200 (2 hours) since software changes infrequently.
 - Use PostgreSQL for persistent storage rather than CSV.
@@ -804,7 +804,7 @@ For large deployments (100+ agents):
 1. **Change the default API token** in `server.conf`. Use a long, random string.
 2. **Use CA-signed certificates** in production. The self-signed certs are for testing only.
 3. **Restrict REST API binding.** Set `rest_bind = 127.0.0.1` if the dashboard should only be accessed locally, or use a reverse proxy (nginx/Caddy) with HTTPS.
-4. **Firewall rules.** Only allow port 9443 from known agent subnets. Restrict port 8080 to admin networks.
+4. **Firewall rules.** Only allow port 65432 from known agent subnets. Restrict port 8080 to admin networks.
 5. **PostgreSQL.** Use a dedicated database user with minimal privileges. Enable SSL for database connections.
 6. **File permissions.** Configuration files containing passwords should be mode 600. Certificate private keys should be mode 600.
 7. **Service user.** Run the server as a dedicated non-root user (the Linux installer creates `seahorse`).
@@ -815,10 +815,10 @@ For large deployments (100+ agents):
 ## 13. Troubleshooting
 
 **Client cannot connect to server:**
-- Verify the server is running and listening: `ss -tlnp | grep 9443`
-- Check firewall rules allow port 9443
-- Verify TLS certificates: `openssl s_client -connect server:9443 -cert client.pem -key client-key.pem -CAfile ca.pem`
-- Confirm `server_host` in client.conf matches the server's address
+- Verify the server is running and listening: `ss -tlnp | grep 65432`
+- Check firewall rules allow port 65432
+- Verify TLS certificates: `openssl s_client -connect server:65432 -cert client.crt -key client.key -CAfile ca.crt`
+- Confirm `server_ip` in client.conf matches the server's address
 
 **Dashboard shows no data:**
 - Verify at least one client is connected and sending telemetry
@@ -836,7 +836,7 @@ For large deployments (100+ agents):
 - Check `pg_hba.conf` allows the connection method
 
 **FIM generating too many alerts:**
-- Add frequently-changing files to `fim_exclude_extensions` (e.g., `.log`, `.tmp`)
+- Add frequently-changing files to `fim_exclude_ext` (e.g., `.log`, `.tmp`)
 - Reduce `fim_watch_paths` to only critical directories
 - Increase `fim_max_file_size` threshold
 
@@ -895,4 +895,4 @@ For large deployments (100+ agents):
 
 ---
 
-*SecureSeaHorse SIEM v5.0.0 -- Built with C++17, OpenSSL, and zero external runtime dependencies.*
+*SecureSeaHorse SIEM v5.1.1 -- Built with C++17, OpenSSL, PostgreSQL libpq, and CMake.*
