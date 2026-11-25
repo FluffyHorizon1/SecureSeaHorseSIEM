@@ -20,6 +20,10 @@
 #include <openssl/err.h>
 
 // --- Phase 1 + 3 + 6 Headers ---
+#ifndef SEAHORSE_VERSION
+#define SEAHORSE_VERSION "5.1.1"
+#endif
+
 #include "client_protocol.h" 
 #include "crypto_utils.h"    // Phase 3: HMAC, CRL, OCSP, heartbeat types
 #include "fim_common.h"      // Phase 6: FIM data structures
@@ -686,7 +690,7 @@ int main(int argc, char* argv[]) {
         return 0;
     }
     if (cli.show_version) {
-        std::cout << "SecureSeaHorse Client v5.0.0 (Phase 25)\n";
+        std::cout << "SecureSeaHorse Client v" << SEAHORSE_VERSION << "\n";
         return 0;
     }
 
@@ -720,7 +724,7 @@ int main(int argc, char* argv[]) {
         logger = std::make_unique<AsyncLogger>(log_path, max_log_size, max_log_files, true);
     }
 
-    logger->log(AsyncLogger::INFO, "=== SecureSeaHorse Client v5.0.0 (Phase 25) starting ===");
+    logger->log(AsyncLogger::INFO, std::string("=== SecureSeaHorse Client v") + SEAHORSE_VERSION + " starting ===");
     logger->log(AsyncLogger::INFO, "Config loaded from: " + cli.config_path);
     logger->log(AsyncLogger::INFO, "Target: " + server_ip + ":" + std::to_string(port)
                  + " | Device ID: " + std::to_string(my_id));
