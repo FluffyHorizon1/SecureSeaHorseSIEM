@@ -16,9 +16,10 @@ set(SEAHORSE_TESTS
 
 foreach(t ${SEAHORSE_TESTS})
     add_executable(${t} ${t}.cpp)
+    target_compile_features(${t} PRIVATE cxx_std_17)
     target_include_directories(${t} PRIVATE ${SERVER_SRC} ${CMAKE_CURRENT_SOURCE_DIR})
     if(MSVC)
-        target_compile_definitions(${t} PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+        target_compile_definitions(${t} PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
     endif()
     add_test(NAME ${t} COMMAND ${t})
 endforeach()

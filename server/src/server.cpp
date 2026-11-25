@@ -48,7 +48,7 @@ using SOCKET = int;
 // Version is injected by CMake from the top-level VERSION file; fall back for
 // ad-hoc single-file builds.
 #ifndef SEAHORSE_VERSION
-#define SEAHORSE_VERSION "5.1.0"
+#define SEAHORSE_VERSION "5.1.1"
 #endif
 
 // --- Phase 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8 + 9 + 10 Headers ---
