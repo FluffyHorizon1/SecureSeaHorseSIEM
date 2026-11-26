@@ -1506,8 +1506,9 @@ int main(int argc, char* argv[]) {
 
         rest_cfg.allow_unauthenticated = conf.get_bool("rest_allow_noauth", false);
         if (rbac) {
-            // RBAC on: a valid tenant JWT is an accepted credential for the REST
-            // gate (per-route role checks still apply via rbac_require).
+            // RBAC on: a valid tenant JWT is the ONLY accepted REST credential.
+            // The static rest_api_token is ignored (it has no tenant and would
+            // bypass tenant scoping). Per-route role checks still apply via rbac_require.
             rest_cfg.alt_auth = [](const HttpRequest& r) {
                 return rbac && rbac->verify_jwt(r.bearer_token()).valid;
             };
@@ -1532,6 +1533,10 @@ int main(int argc, char* argv[]) {
             } else if (ex.warn) {
                 logger->log(AsyncLogger::WARN, "REST API: " + ex.message);
             }
+            // RBAC on: drop the static token so it cannot be used even if a later
+            // change forgets the rest_authorize() "ignore when alt_auth is set" rule.
+            if (rest_cfg.enabled && rbac && !rest_cfg.api_token.empty())
+                rest_cfg.api_token.clear();
         }
 
         if (rest_cfg.enabled) {

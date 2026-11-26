@@ -286,16 +286,18 @@ enum class AuthDecision {
 };
 
 // Decide whether `req` may call an auth-required route.
-//   * a matching static api_token is always sufficient
-//   * a request accepted by alt_auth (RBAC JWT) is sufficient
+//   * if alt_auth is set (RBAC on): ONLY a request accepted by alt_auth is
+//     allowed. The static api_token is ignored -- it has no tenant and would
+//     bypass tenant scoping.
+//   * otherwise a matching static api_token is sufficient
 //   * if neither mechanism is configured: deny unless allow_unauthenticated
 //   * if any mechanism is configured, allow_unauthenticated is ignored
 inline AuthDecision rest_authorize(const RestConfig& cfg, const HttpRequest& req) {
     const std::string presented = req.bearer_token();
     if (!presented.empty()) {
+        if (cfg.alt_auth)
+            return cfg.alt_auth(req) ? AuthDecision::ALLOWED : AuthDecision::DENIED;
         if (!cfg.api_token.empty() && constant_time_equals(presented, cfg.api_token))
-            return AuthDecision::ALLOWED;
-        if (cfg.alt_auth && cfg.alt_auth(req))
             return AuthDecision::ALLOWED;
     }
     if (cfg.api_token.empty() && !cfg.alt_auth)
@@ -315,9 +317,13 @@ struct RestExposure {
 };
 
 // Startup policy (Phase 28, tightened): decide whether the REST API may start.
-//   * A shipped default token (contains "changeme") is refused on ANY bind.
+//   * A shipped default token (contains "changeme") is refused on ANY bind
+//     (even with RBAC -- clear it).
 //   * No token and no RBAC: refused unless allow_noauth AND loopback bind.
-//   * Otherwise (strong token and/or RBAC): allowed on any bind.
+//   * RBAC on: allowed on any bind. A configured rest_api_token is ignored
+//     (it would bypass tenant scoping) and a warning is returned so main()
+//     can log it and clear the token.
+//   * Otherwise (strong token, RBAC off): allowed on any bind.
 inline RestExposure rest_exposure_decision(bool rest_enabled,
                                            const std::string& bind,
                                            const std::string& token,
@@ -330,7 +336,17 @@ inline RestExposure rest_exposure_decision(bool rest_enabled,
                     "token (or clear it and enable RBAC). REST API stays DOWN.";
         return d;
     }
-    if (token.empty() && !rbac_enabled) {
+    if (rbac_enabled) {
+        d.enable = true;
+        if (!token.empty()) {
+            d.warn = true;
+            d.message = "rbac_enabled: rest_api_token is ignored so it cannot bypass "
+                        "tenant scoping. Tenant JWTs (POST /api/auth/login) are the only "
+                        "REST credentials. Clear rest_api_token from the config.";
+        }
+        return d;
+    }
+    if (token.empty()) {
         if (!allow_noauth) {
             d.message = "no rest_api_token and RBAC disabled: REST API refuses to start. "
                         "Set rest_api_token, enable rbac_enabled, or (local development "

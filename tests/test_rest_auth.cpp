@@ -66,11 +66,15 @@ int main() {
         c.allow_unauthenticated = true;
         CHECK(rest_authorize(c, req_with("")) == AuthDecision::DENIED);
 
-        // token + alt_auth: either credential works, nothing else does
+        // token + alt_auth: the static token is IGNORED (it would bypass tenant
+        // scoping). Only a credential accepted by alt_auth is allowed.
         c.api_token = "legacy-token-123456";
-        CHECK(rest_authorize(c, req_with("Bearer legacy-token-123456")) == AuthDecision::ALLOWED);
+        CHECK(rest_authorize(c, req_with("Bearer legacy-token-123456")) == AuthDecision::DENIED);
         CHECK(rest_authorize(c, req_with("Bearer valid.jwt.sig")) == AuthDecision::ALLOWED);
         CHECK(rest_authorize(c, req_with("Bearer nope")) == AuthDecision::DENIED);
+        c.allow_unauthenticated = true;
+        CHECK(rest_authorize(c, req_with("Bearer legacy-token-123456")) == AuthDecision::DENIED);
+        CHECK(rest_authorize(c, req_with("")) == AuthDecision::DENIED);
 
         // alt_auth is not even consulted without a presented token
         int calls = 0;
@@ -125,6 +129,17 @@ int main() {
     {   // RBAC with no static token: any bind (JWT is the credential)
         auto a = rest_exposure_decision(true, "0.0.0.0", "", true, false);
         CHECK(a.enable); CHECK(!a.warn);
+        CHECK(a.message.empty());
+    }
+    {   // RBAC + a strong static token: start is allowed, but the token is
+        // ignored (warning). The message must not echo the token.
+        auto a = rest_exposure_decision(true, "0.0.0.0", strong, true, false);
+        CHECK(a.enable); CHECK(a.warn);
+        CHECK(a.message.find("ignored") != std::string::npos);
+        CHECK(a.message.find(strong) == std::string::npos);
+        // allow_noauth does not change this
+        auto b = rest_exposure_decision(true, "127.0.0.1", strong, true, true);
+        CHECK(b.enable); CHECK(b.warn);
     }
     {   // messages never echo the token
         auto d = rest_exposure_decision(true, "0.0.0.0", "changeme-hunter2", false, false);
