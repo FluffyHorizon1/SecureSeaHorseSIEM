@@ -348,6 +348,17 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 |---|---|---|
 | `correlation_enabled` | `true` | Enable cross-device correlation |
 
+#### RBAC login throttle (`POST /api/auth/login`)
+
+Failed logins are counted per username and per peer IP. Reaching the limit inside the window locks that key (HTTP `429` with `Retry-After`); the check runs before password hashing. Behind a reverse proxy all clients share the proxy's IP, so keep the per-IP limit well above the per-user limit.
+
+| Key | Default | Description |
+|---|---|---|
+| `login_max_failures` | `5` | Failures per username inside the window before lockout (`0` disables) |
+| `login_ip_max_failures` | `30` | Failures per peer IP inside the window before lockout (`0` disables) |
+| `login_window_s` | `300` | Sliding window for counting failures |
+| `login_lockout_s` | `300` | Lockout duration |
+
 ### 4.2 Client Configuration (client.conf)
 
 #### Connection
