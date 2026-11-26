@@ -1,0 +1,36 @@
+# =============================================================================
+# SecureSeaHorse SIEM -- gitleaks configuration
+# Extends the upstream default ruleset and adds project-specific rules for the
+# secrets this product actually handles (REST token, JWT/HMAC secret, DB
+# password, SOAR key). Used by .github/workflows/secret-scan.yml.
+# =============================================================================
+title = "SecureSeaHorse SIEM gitleaks config"
+
+[extend]
+useDefault = true
+
+# Any non-empty secret value assigned in a committed *.conf file. Shipped
+# configs must leave these keys empty (secrets come from the operator).
+[[rules]]
+id          = "seahorse-conf-secret-assignment"
+description = "Non-empty SecureSeaHorse secret assigned in a *.conf file"
+regex       = '''(?mi)^[ \t]*(?:rest_api_token|rbac_jwt_secret|rbac_secret|db_pass|soar_api_key)[ \t]*=[ \t]*([^\s#'"]{4,})'''
+path        = '''(?i)\.conf$'''
+keywords    = ["rest_api_token", "rbac_jwt_secret", "rbac_secret", "db_pass", "soar_api_key"]
+secretGroup = 1
+
+# The historical shipped defaults (pre-Phase-28). They must never come back,
+# in config *or* in docs.
+[[rules]]
+id          = "seahorse-known-default-credential"
+description = "Known SecureSeaHorse default/placeholder credential (changeme-*) assigned to a secret key"
+regex       = '''(?i)(?:rest_api_token|rbac_(?:jwt_)?secret)\W{1,8}(changeme[-\w]*)'''
+keywords    = ["changeme"]
+secretGroup = 1
+
+[allowlist]
+description = "Documentation placeholders"
+regexTarget = "match"
+regexes = [
+  '''your-secret-token-here''',
+]
