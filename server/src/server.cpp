@@ -62,6 +62,7 @@ using SOCKET = int;
 #include "fim_common.h"           // Phase 6: FIM data structures
 #include "fim_monitor.h"          // Phase 6: Server-side FIM monitor
 #include "rest_server.h"          // Phase 7: REST API server
+#include "rate_limiter.h"          // Login brute-force throttle
 #include "dashboard_html.h"       // Phase 7: Embedded web dashboard
 #include "incident_response.h"    // Phase 8: Incident response automation
 #include "fleet_manager.h"        // Phase 9: Agent fleet management
@@ -1799,14 +1800,46 @@ int main(int argc, char* argv[]) {
             });
 
             // --- Phase 20/31: authentication endpoints ---
-            rest_server->post("/api/auth/login", [](const HttpRequest& req) {
+            // Brute-force protection: failed logins are throttled per normalised
+            // username AND per peer IP. The lock is checked BEFORE the PBKDF2
+            // hash so a locked client cannot burn server CPU. 429 + Retry-After.
+            // (Behind a reverse proxy the peer IP is the proxy's, hence the much
+            // higher per-IP threshold.)
+            FailureThrottle::Config tu;
+            tu.max_failures = static_cast<size_t>((std::max)(0, conf.get_int("login_max_failures", 5)));
+            tu.window_ms    = static_cast<int64_t>((std::max)(1, conf.get_int("login_window_s", 300))) * 1000;
+            tu.lockout_ms   = static_cast<int64_t>((std::max)(1, conf.get_int("login_lockout_s", 300))) * 1000;
+            FailureThrottle::Config ti = tu;
+            ti.max_failures = static_cast<size_t>((std::max)(0, conf.get_int("login_ip_max_failures", 30)));
+            auto login_user_throttle = std::make_shared<FailureThrottle>(tu);
+            auto login_ip_throttle   = std::make_shared<FailureThrottle>(ti);
+
+            rest_server->post("/api/auth/login", [login_user_throttle, login_ip_throttle](const HttpRequest& req) {
                 if (!rbac) return HttpResponse::error(503, "RBAC disabled");
                 std::string u = json_field(req.body, "username");
                 std::string p = json_field(req.body, "password");
                 if (u.empty() || p.empty())
                     return HttpResponse::error(400, "username+password required");
-                auto res = rbac->login(u, p, "rest_api");
-                if (!res.success) return HttpResponse::error(401, "invalid credentials");
+
+                const std::string ip   = req.remote_addr.empty() ? std::string("unknown") : req.remote_addr;
+                const std::string ukey = FailureThrottle::normalize_key(u);
+                const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                const int64_t wait_ms = (std::max)(login_ip_throttle->retry_after_ms(ip, now_ms),
+                                                   login_user_throttle->retry_after_ms(ukey, now_ms));
+                if (wait_ms > 0) {
+                    HttpResponse r = HttpResponse::error(429, "too many failed logins; try again later");
+                    r.headers["Retry-After"] = std::to_string((wait_ms + 999) / 1000);
+                    return r;
+                }
+
+                auto res = rbac->login(u, p, ip);
+                if (!res.success) {
+                    login_ip_throttle->record_failure(ip, now_ms);
+                    login_user_throttle->record_failure(ukey, now_ms);
+                    return HttpResponse::error(401, "invalid credentials");
+                }
+                login_user_throttle->record_success(ukey);
                 return HttpResponse::json(
                     std::string("{\"token\":\"") + res.jwt
                     + "\",\"role\":\""   + role_to_str(res.role)

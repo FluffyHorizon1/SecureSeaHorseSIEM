@@ -54,6 +54,8 @@ struct HttpRequest {
     std::string body;            // POST body
     std::map<std::string, std::string> headers;
     std::map<std::string, std::string> query_params;
+    std::string remote_addr;     // peer IPv4 address as seen by the socket ("" if unknown).
+                                 // Behind a reverse proxy this is the PROXY's address.
 
     std::string get_param(const std::string& key, const std::string& def = "") const {
         auto it = query_params.find(key);
@@ -156,6 +158,7 @@ struct HttpResponse {
             case 403: return "Forbidden";
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
+            case 429: return "Too Many Requests";
             case 500: return "Internal Server Error";
             default:  return "Unknown";
         }
@@ -359,9 +362,13 @@ private:
             SOCKET client = accept(listen_sock_, (sockaddr*)&client_addr, &client_len);
             if (client == INVALID_SOCKET) continue;
 
+            char ipbuf[INET_ADDRSTRLEN] = {0};
+            std::string peer;
+            if (inet_ntop(AF_INET, &client_addr.sin_addr, ipbuf, sizeof(ipbuf))) peer = ipbuf;
+
             // Handle in detached thread (simple model -- sufficient for dashboard)
-            std::thread([this, client]() {
-                handle_request(client);
+            std::thread([this, client, peer]() {
+                handle_request(client, peer);
             }).detach();
         }
     }
@@ -369,7 +376,7 @@ private:
     // =========================================================================
     // HANDLE REQUEST
     // =========================================================================
-    void handle_request(SOCKET sock) {
+    void handle_request(SOCKET sock, const std::string& peer = "") {
         total_requests_++;
 
         // Set read timeout
@@ -458,6 +465,7 @@ private:
 
         // Parse request
         HttpRequest req = parse_request(raw);
+        req.remote_addr = peer;   // never taken from headers (spoofable)
 
         // Handle CORS preflight
         if (req.method == "OPTIONS") {

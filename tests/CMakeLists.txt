@@ -11,6 +11,7 @@ set(SEAHORSE_TESTS
     test_config
     test_json_escape
     test_hunt
+    test_rate_limiter
     test_ml
 )
 
