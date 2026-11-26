@@ -3,6 +3,7 @@
 #include <cstdio>
 #include "test_util.h"
 #include "rate_limiter.h"
+#include "rest_server.h"
 
 int main() {
     std::printf("test_rate_limiter\n");
@@ -94,6 +95,56 @@ int main() {
     CHECK(FailureThrottle::normalize_key("Alice@Example.COM") == "alice@example.com");
     CHECK(FailureThrottle::normalize_key(std::string(500, 'A')).size() == 128);
     CHECK(FailureThrottle::normalize_key("") == "");
+
+    // ---- parse_trusted_proxies ------------------------------------------------
+    {
+        auto a = parse_trusted_proxies("  10.0.0.1, 10.0.0.2 ,192.168.1.1 ");
+        CHECK(a.size() == 3);
+        CHECK(a[0] == "10.0.0.1" && a[2] == "192.168.1.1");
+        CHECK(parse_trusted_proxies("").empty());
+        CHECK(parse_trusted_proxies("   ,  ,").empty());
+        CHECK(parse_trusted_proxies("localhost, example.com, 10.0.0.1/24").empty()); // no hostnames/CIDR
+        CHECK(parse_trusted_proxies("10.0.0.1:8080")[0] == "10.0.0.1");
+        CHECK(parse_trusted_proxies("999.0.0.1").empty());
+        CHECK(parse_trusted_proxies("1.2.3").empty());
+        CHECK(parse_trusted_proxies("127.0.0.1").size() == 1);
+    }
+
+    // ---- effective_client_ip ---------------------------------------------------
+    {
+        const auto trusted = parse_trusted_proxies("10.0.0.1, 10.0.0.2");
+        const std::vector<std::string> none;
+
+        // empty / off by default: XFF is ignored, even from a "would-be" proxy
+        CHECK(effective_client_ip("10.0.0.1", "1.2.3.4", none) == "10.0.0.1");
+        CHECK(effective_client_ip("8.8.8.8", "1.2.3.4", none) == "8.8.8.8");
+
+        // spoofed XFF from an UNTRUSTED peer is ignored
+        CHECK(effective_client_ip("8.8.8.8", "1.2.3.4", trusted) == "8.8.8.8");
+        CHECK(effective_client_ip("8.8.8.8", "1.2.3.4, 10.0.0.1", trusted) == "8.8.8.8");
+        CHECK(effective_client_ip("8.8.8.8", "10.0.0.1", trusted) == "8.8.8.8");
+        CHECK(effective_client_ip("1.2.3.4", "9.9.9.9", trusted) == "1.2.3.4");
+
+        // trusted peer, no/empty XFF: fall back to peer
+        CHECK(effective_client_ip("10.0.0.1", "", trusted) == "10.0.0.1");
+        CHECK(effective_client_ip("10.0.0.1", "   ,  ", trusted) == "10.0.0.1");
+        CHECK(effective_client_ip("", "1.2.3.4", trusted) == "");
+
+        // right-most untrusted hop
+        CHECK(effective_client_ip("10.0.0.1", "1.2.3.4", trusted) == "1.2.3.4");
+        CHECK(effective_client_ip("10.0.0.1", "1.2.3.4, 9.9.9.9", trusted) == "9.9.9.9");
+        CHECK(effective_client_ip("10.0.0.1", "1.2.3.4, 10.0.0.2", trusted) == "1.2.3.4");
+        CHECK(effective_client_ip("10.0.0.1", "4.4.4.4, 1.2.3.4, 10.0.0.2", trusted) == "1.2.3.4");
+        // entire chain trusted: left-most (claimed original client)
+        CHECK(effective_client_ip("10.0.0.1", "10.0.0.2", trusted) == "10.0.0.2");
+        CHECK(effective_client_ip("10.0.0.1", "10.0.0.2, 10.0.0.1", trusted) == "10.0.0.2");
+
+        // whitespace, quotes, IPv4:port in the header
+        CHECK(effective_client_ip("10.0.0.1", "  1.2.3.4  ", trusted) == "1.2.3.4");
+        CHECK(effective_client_ip("10.0.0.1", "\"1.2.3.4\"", trusted) == "1.2.3.4");
+        CHECK(effective_client_ip("10.0.0.1", "1.2.3.4:12345", trusted) == "1.2.3.4");
+        CHECK(effective_client_ip("10.0.0.1", "4.4.4.4, 1.2.3.4:80, 10.0.0.2", trusted) == "1.2.3.4");
+    }
 
     TEST_MAIN_RETURN();
 }

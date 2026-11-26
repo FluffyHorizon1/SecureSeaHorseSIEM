@@ -37,6 +37,7 @@ typedef int socklen_t;
 #include <map>
 #include <functional>
 #include <sstream>
+#include <iomanip>   // std::setprecision (header must be self-contained)
 #include <algorithm>
 #include <thread>
 #include <atomic>
@@ -56,6 +57,8 @@ struct HttpRequest {
     std::map<std::string, std::string> query_params;
     std::string remote_addr;     // peer IPv4 address as seen by the socket ("" if unknown).
                                  // Behind a reverse proxy this is the PROXY's address.
+    std::string client_ip;       // remote_addr, or the right-most untrusted X-Forwarded-For
+                                 // hop when the peer is in RestConfig::trusted_proxies.
 
     std::string get_param(const std::string& key, const std::string& def = "") const {
         auto it = query_params.find(key);
@@ -256,7 +259,113 @@ struct RestConfig {
     std::string cors_origin   = "";        // Access-Control-Allow-Origin; empty = no CORS header (same-origin only)
     int         max_body_size = 1024 * 64; // 64KB max request body
     int         read_timeout  = 5;         // Seconds
+    // Direct-peer IPv4 addresses (no CIDR) of reverse proxies whose
+    // X-Forwarded-For header may be honoured. Empty (the default) = XFF is
+    // always ignored. See effective_client_ip().
+    std::vector<std::string> trusted_proxies;
 };
+
+
+// =============================================================================
+// TRUSTED-PROXY / X-FORWARDED-FOR (pure functions -- tests/test_rate_limiter.cpp)
+// =============================================================================
+
+inline std::string trim_ws(std::string s) {
+    size_t a = 0;
+    while (a < s.size() && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) ++a;
+    size_t b = s.size();
+    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n')) --b;
+    return s.substr(a, b - a);
+}
+
+// Strip optional quotes and a trailing :port on IPv4 tokens. Not a validator.
+inline std::string normalize_ip_token(std::string t) {
+    t = trim_ws(std::move(t));
+    if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
+        t = trim_ws(t.substr(1, t.size() - 2));
+    const auto first = t.find(':');
+    const auto last  = t.rfind(':');
+    // A single colon and at least one dot => IPv4:port, not IPv6.
+    if (first != std::string::npos && first == last && t.find('.') != std::string::npos)
+        t = trim_ws(t.substr(0, first));
+    return t;
+}
+
+inline bool is_ipv4_literal(const std::string& s) {
+    int dots = 0, octet = 0, digits = 0;
+    if (s.empty()) return false;
+    for (size_t i = 0; i <= s.size(); ++i) {
+        if (i == s.size() || s[i] == '.') {
+            if (digits == 0 || octet > 255) return false;
+            if (i == s.size()) return dots == 3;
+            ++dots; octet = 0; digits = 0;
+        } else if (s[i] >= '0' && s[i] <= '9') {
+            if (digits == 3) return false;
+            octet = octet * 10 + (s[i] - '0');
+            ++digits;
+        } else {
+            return false;
+        }
+    }
+    return false;
+}
+
+// Comma-separated IPv4 list from config (`rest_trusted_proxies`). Hostnames
+// and CIDR ranges are rejected -- add exact addresses only.
+inline std::vector<std::string> parse_trusted_proxies(const std::string& csv) {
+    std::vector<std::string> out;
+    std::string cur;
+    for (size_t i = 0; i <= csv.size(); ++i) {
+        if (i == csv.size() || csv[i] == ',') {
+            const std::string t = normalize_ip_token(cur);
+            if (is_ipv4_literal(t)) out.push_back(t);
+            cur.clear();
+        } else {
+            cur.push_back(csv[i]);
+        }
+    }
+    return out;
+}
+
+inline bool is_trusted_proxy(const std::string& ip,
+                             const std::vector<std::string>& trusted) {
+    for (const auto& t : trusted) if (ip == t) return true;
+    return false;
+}
+
+inline std::vector<std::string> parse_forwarded_for(const std::string& header) {
+    std::vector<std::string> hops;
+    std::string cur;
+    for (size_t i = 0; i <= header.size(); ++i) {
+        if (i == header.size() || header[i] == ',') {
+            const std::string t = normalize_ip_token(cur);
+            if (!t.empty()) hops.push_back(t);
+            cur.clear();
+        } else {
+            cur.push_back(header[i]);
+        }
+    }
+    return hops;
+}
+
+// Honour X-Forwarded-For only when the direct peer is in `trusted`.
+// Walk the chain from the right and return the right-most address that is
+// NOT trusted. If every hop is trusted, return the left-most hop (the
+// claimed original client). Otherwise (untrusted or unknown peer, empty
+// list, empty header) return the peer -- never a header-supplied address
+// from an untrusted sender.
+inline std::string effective_client_ip(const std::string& peer,
+                                       const std::string& xff_header,
+                                       const std::vector<std::string>& trusted) {
+    if (peer.empty() || trusted.empty() || !is_trusted_proxy(peer, trusted))
+        return peer;
+    const auto hops = parse_forwarded_for(xff_header);
+    if (hops.empty()) return peer;
+    for (size_t i = hops.size(); i-- > 0; ) {
+        if (!is_trusted_proxy(hops[i], trusted)) return hops[i];
+    }
+    return hops.front();
+}
 
 // =============================================================================
 // REST SERVER
@@ -465,7 +574,10 @@ private:
 
         // Parse request
         HttpRequest req = parse_request(raw);
-        req.remote_addr = peer;   // never taken from headers (spoofable)
+        req.remote_addr = peer;   // socket peer; never taken from headers
+        req.client_ip = effective_client_ip(peer,
+                                            req.get_header("x-forwarded-for"),
+                                            config_.trusted_proxies);
 
         // Handle CORS preflight
         if (req.method == "OPTIONS") {

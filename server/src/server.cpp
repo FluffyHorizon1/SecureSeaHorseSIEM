@@ -1533,6 +1533,8 @@ int main(int argc, char* argv[]) {
         }
 
         if (rest_cfg.enabled) {
+            rest_cfg.trusted_proxies = parse_trusted_proxies(
+                conf.get("rest_trusted_proxies", ""));
             rest_server = std::make_unique<RestServer>(rest_cfg);
 
             // --- Dashboard ---
@@ -1803,8 +1805,8 @@ int main(int argc, char* argv[]) {
             // Brute-force protection: failed logins are throttled per normalised
             // username AND per peer IP. The lock is checked BEFORE the PBKDF2
             // hash so a locked client cannot burn server CPU. 429 + Retry-After.
-            // (Behind a reverse proxy the peer IP is the proxy's, hence the much
-            // higher per-IP threshold.)
+            // Behind an unlisted reverse proxy the peer IP is the proxy's, hence
+            // the higher per-IP threshold. Set rest_trusted_proxies to honour XFF.
             FailureThrottle::Config tu;
             tu.max_failures = static_cast<size_t>((std::max)(0, conf.get_int("login_max_failures", 5)));
             tu.window_ms    = static_cast<int64_t>((std::max)(1, conf.get_int("login_window_s", 300))) * 1000;
@@ -1821,7 +1823,11 @@ int main(int argc, char* argv[]) {
                 if (u.empty() || p.empty())
                     return HttpResponse::error(400, "username+password required");
 
-                const std::string ip   = req.remote_addr.empty() ? std::string("unknown") : req.remote_addr;
+                // client_ip honours X-Forwarded-For only when the direct peer is
+                // in rest_trusted_proxies; otherwise it is the socket peer.
+                const std::string ip = req.client_ip.empty()
+                    ? (req.remote_addr.empty() ? std::string("unknown") : req.remote_addr)
+                    : req.client_ip;
                 const std::string ukey = FailureThrottle::normalize_key(u);
                 const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count();
