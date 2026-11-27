@@ -12,6 +12,8 @@ set(SEAHORSE_TESTS
     test_json_escape
     test_hunt
     test_ml
+    test_sigma
+    test_sigma_ingest
 )
 
 foreach(t ${SEAHORSE_TESTS})
@@ -23,3 +25,9 @@ foreach(t ${SEAHORSE_TESTS})
     endif()
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# test_sigma loads the sample packs from the source tree (cwd may be the build dir).
+if(TARGET test_sigma)
+    target_compile_definitions(test_sigma PRIVATE
+        "SEAHORSE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
+endif()
