@@ -55,10 +55,6 @@ struct HttpRequest {
     std::string body;            // POST body
     std::map<std::string, std::string> headers;
     std::map<std::string, std::string> query_params;
-    std::string remote_addr;     // peer IPv4 address as seen by the socket ("" if unknown).
-                                 // Behind a reverse proxy this is the PROXY's address.
-    std::string client_ip;       // remote_addr, or the right-most untrusted X-Forwarded-For
-                                 // hop when the peer is in RestConfig::trusted_proxies.
 
     std::string get_param(const std::string& key, const std::string& def = "") const {
         auto it = query_params.find(key);
@@ -161,7 +157,6 @@ struct HttpResponse {
             case 403: return "Forbidden";
             case 404: return "Not Found";
             case 405: return "Method Not Allowed";
-            case 429: return "Too Many Requests";
             case 500: return "Internal Server Error";
             default:  return "Unknown";
         }
@@ -255,116 +250,121 @@ struct RestConfig {
     bool        enabled       = true;
     int         port          = 8080;
     std::string bind_address  = "127.0.0.1"; // Fail-safe default: loopback only
-    std::string api_token     = "";        // Static bearer token (empty = no auth; only allowed on loopback -- see main())
+    std::string api_token     = "";        // Static bearer token. Empty = NO static credential (see rest_authorize)
     std::string cors_origin   = "";        // Access-Control-Allow-Origin; empty = no CORS header (same-origin only)
     int         max_body_size = 1024 * 64; // 64KB max request body
     int         read_timeout  = 5;         // Seconds
-    // Direct-peer IPv4 addresses (no CIDR) of reverse proxies whose
-    // X-Forwarded-For header may be honoured. Empty (the default) = XFF is
-    // always ignored. See effective_client_ip().
-    std::vector<std::string> trusted_proxies;
+    // Fail-closed auth: with no api_token and no alt_auth, authenticated routes
+    // are DENIED unless this is explicitly set (dev only; main() additionally
+    // restricts it to a loopback bind).
+    bool        allow_unauthenticated = false;
+    // Optional second credential check (e.g. an RBAC JWT verifier). Called only
+    // when a bearer token was presented. Must be thread-safe.
+    std::function<bool(const HttpRequest&)> alt_auth;
 };
 
-
 // =============================================================================
-// TRUSTED-PROXY / X-FORWARDED-FOR (pure functions -- tests/test_rate_limiter.cpp)
+// AUTH DECISIONS (pure functions -- unit tested in tests/test_rest_auth.cpp)
 // =============================================================================
 
-inline std::string trim_ws(std::string s) {
-    size_t a = 0;
-    while (a < s.size() && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n')) ++a;
-    size_t b = s.size();
-    while (b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n')) --b;
-    return s.substr(a, b - a);
+// Compare two secrets without an early exit on the first differing byte.
+inline bool constant_time_equals(const std::string& a, const std::string& b) {
+    const size_t n = (std::max)(a.size(), b.size());
+    unsigned char diff = (a.size() != b.size()) ? 1 : 0;
+    for (size_t i = 0; i < n; ++i) {
+        const unsigned char ca = i < a.size() ? static_cast<unsigned char>(a[i]) : 0;
+        const unsigned char cb = i < b.size() ? static_cast<unsigned char>(b[i]) : 0;
+        diff = static_cast<unsigned char>(diff | (ca ^ cb));
+    }
+    return diff == 0;
 }
 
-// Strip optional quotes and a trailing :port on IPv4 tokens. Not a validator.
-inline std::string normalize_ip_token(std::string t) {
-    t = trim_ws(std::move(t));
-    if (t.size() >= 2 && t.front() == '"' && t.back() == '"')
-        t = trim_ws(t.substr(1, t.size() - 2));
-    const auto first = t.find(':');
-    const auto last  = t.rfind(':');
-    // A single colon and at least one dot => IPv4:port, not IPv6.
-    if (first != std::string::npos && first == last && t.find('.') != std::string::npos)
-        t = trim_ws(t.substr(0, first));
-    return t;
+enum class AuthDecision {
+    ALLOWED,
+    DENIED,                      // credential missing or wrong
+    DENIED_NO_AUTH_CONFIGURED    // server has no credential configured at all (fail closed)
+};
+
+// Decide whether `req` may call an auth-required route.
+//   * if alt_auth is set (RBAC on): ONLY a request accepted by alt_auth is
+//     allowed. The static api_token is ignored -- it has no tenant and would
+//     bypass tenant scoping.
+//   * otherwise a matching static api_token is sufficient
+//   * if neither mechanism is configured: deny unless allow_unauthenticated
+//   * if any mechanism is configured, allow_unauthenticated is ignored
+inline AuthDecision rest_authorize(const RestConfig& cfg, const HttpRequest& req) {
+    const std::string presented = req.bearer_token();
+    if (!presented.empty()) {
+        if (cfg.alt_auth)
+            return cfg.alt_auth(req) ? AuthDecision::ALLOWED : AuthDecision::DENIED;
+        if (!cfg.api_token.empty() && constant_time_equals(presented, cfg.api_token))
+            return AuthDecision::ALLOWED;
+    }
+    if (cfg.api_token.empty() && !cfg.alt_auth)
+        return cfg.allow_unauthenticated ? AuthDecision::ALLOWED
+                                         : AuthDecision::DENIED_NO_AUTH_CONFIGURED;
+    return AuthDecision::DENIED;
 }
 
-inline bool is_ipv4_literal(const std::string& s) {
-    int dots = 0, octet = 0, digits = 0;
-    if (s.empty()) return false;
-    for (size_t i = 0; i <= s.size(); ++i) {
-        if (i == s.size() || s[i] == '.') {
-            if (digits == 0 || octet > 255) return false;
-            if (i == s.size()) return dots == 3;
-            ++dots; octet = 0; digits = 0;
-        } else if (s[i] >= '0' && s[i] <= '9') {
-            if (digits == 3) return false;
-            octet = octet * 10 + (s[i] - '0');
-            ++digits;
-        } else {
-            return false;
+inline bool is_loopback_bind(const std::string& b) {
+    return b == "127.0.0.1" || b == "::1" || b == "localhost" || b.rfind("127.", 0) == 0;
+}
+
+struct RestExposure {
+    bool        enable = false;   // may the REST server start?
+    bool        warn   = false;   // started, but log `message` at WARN
+    std::string message;          // human-readable reason (never contains secrets)
+};
+
+// Startup policy (Phase 28, tightened): decide whether the REST API may start.
+//   * A shipped default token (contains "changeme") is refused on ANY bind
+//     (even with RBAC -- clear it).
+//   * No token and no RBAC: refused unless allow_noauth AND loopback bind.
+//   * RBAC on: allowed on any bind. A configured rest_api_token is ignored
+//     (it would bypass tenant scoping) and a warning is returned so main()
+//     can log it and clear the token.
+//   * Otherwise (strong token, RBAC off): allowed on any bind.
+inline RestExposure rest_exposure_decision(bool rest_enabled,
+                                           const std::string& bind,
+                                           const std::string& token,
+                                           bool rbac_enabled,
+                                           bool allow_noauth) {
+    RestExposure d;
+    if (!rest_enabled) { d.message = "REST API disabled by config"; return d; }
+    if (token.find("changeme") != std::string::npos) {
+        d.message = "rest_api_token is a shipped default placeholder; set a strong random "
+                    "token (or clear it and enable RBAC). REST API stays DOWN.";
+        return d;
+    }
+    if (rbac_enabled) {
+        d.enable = true;
+        if (!token.empty()) {
+            d.warn = true;
+            d.message = "rbac_enabled: rest_api_token is ignored so it cannot bypass "
+                        "tenant scoping. Tenant JWTs (POST /api/auth/login) are the only "
+                        "REST credentials. Clear rest_api_token from the config.";
         }
+        return d;
     }
-    return false;
-}
-
-// Comma-separated IPv4 list from config (`rest_trusted_proxies`). Hostnames
-// and CIDR ranges are rejected -- add exact addresses only.
-inline std::vector<std::string> parse_trusted_proxies(const std::string& csv) {
-    std::vector<std::string> out;
-    std::string cur;
-    for (size_t i = 0; i <= csv.size(); ++i) {
-        if (i == csv.size() || csv[i] == ',') {
-            const std::string t = normalize_ip_token(cur);
-            if (is_ipv4_literal(t)) out.push_back(t);
-            cur.clear();
-        } else {
-            cur.push_back(csv[i]);
+    if (token.empty()) {
+        if (!allow_noauth) {
+            d.message = "no rest_api_token and RBAC disabled: REST API refuses to start. "
+                        "Set rest_api_token, enable rbac_enabled, or (local development "
+                        "only) set rest_allow_noauth = true on a loopback bind.";
+            return d;
         }
-    }
-    return out;
-}
-
-inline bool is_trusted_proxy(const std::string& ip,
-                             const std::vector<std::string>& trusted) {
-    for (const auto& t : trusted) if (ip == t) return true;
-    return false;
-}
-
-inline std::vector<std::string> parse_forwarded_for(const std::string& header) {
-    std::vector<std::string> hops;
-    std::string cur;
-    for (size_t i = 0; i <= header.size(); ++i) {
-        if (i == header.size() || header[i] == ',') {
-            const std::string t = normalize_ip_token(cur);
-            if (!t.empty()) hops.push_back(t);
-            cur.clear();
-        } else {
-            cur.push_back(header[i]);
+        if (!is_loopback_bind(bind)) {
+            d.message = "rest_allow_noauth is only honoured on a loopback bind; '" + bind +
+                        "' is not loopback. REST API stays DOWN.";
+            return d;
         }
+        d.enable = true; d.warn = true;
+        d.message = "rest_allow_noauth = true: REST API is UNAUTHENTICATED (loopback only). "
+                    "Development use only.";
+        return d;
     }
-    return hops;
-}
-
-// Honour X-Forwarded-For only when the direct peer is in `trusted`.
-// Walk the chain from the right and return the right-most address that is
-// NOT trusted. If every hop is trusted, return the left-most hop (the
-// claimed original client). Otherwise (untrusted or unknown peer, empty
-// list, empty header) return the peer -- never a header-supplied address
-// from an untrusted sender.
-inline std::string effective_client_ip(const std::string& peer,
-                                       const std::string& xff_header,
-                                       const std::vector<std::string>& trusted) {
-    if (peer.empty() || trusted.empty() || !is_trusted_proxy(peer, trusted))
-        return peer;
-    const auto hops = parse_forwarded_for(xff_header);
-    if (hops.empty()) return peer;
-    for (size_t i = hops.size(); i-- > 0; ) {
-        if (!is_trusted_proxy(hops[i], trusted)) return hops[i];
-    }
-    return hops.front();
+    d.enable = true;
+    return d;
 }
 
 // =============================================================================
@@ -471,13 +471,9 @@ private:
             SOCKET client = accept(listen_sock_, (sockaddr*)&client_addr, &client_len);
             if (client == INVALID_SOCKET) continue;
 
-            char ipbuf[INET_ADDRSTRLEN] = {0};
-            std::string peer;
-            if (inet_ntop(AF_INET, &client_addr.sin_addr, ipbuf, sizeof(ipbuf))) peer = ipbuf;
-
             // Handle in detached thread (simple model -- sufficient for dashboard)
-            std::thread([this, client, peer]() {
-                handle_request(client, peer);
+            std::thread([this, client]() {
+                handle_request(client);
             }).detach();
         }
     }
@@ -485,7 +481,7 @@ private:
     // =========================================================================
     // HANDLE REQUEST
     // =========================================================================
-    void handle_request(SOCKET sock, const std::string& peer = "") {
+    void handle_request(SOCKET sock) {
         total_requests_++;
 
         // Set read timeout
@@ -574,10 +570,6 @@ private:
 
         // Parse request
         HttpRequest req = parse_request(raw);
-        req.remote_addr = peer;   // socket peer; never taken from headers
-        req.client_ip = effective_client_ip(peer,
-                                            req.get_header("x-forwarded-for"),
-                                            config_.trusted_proxies);
 
         // Handle CORS preflight
         if (req.method == "OPTIONS") {
@@ -600,8 +592,13 @@ private:
                 match_path(route.path, req.path))
             {
                 // Auth check
-                if (route.auth_required && !config_.api_token.empty()) {
-                    if (req.bearer_token() != config_.api_token) {
+                if (route.auth_required) {
+                    const AuthDecision ad = rest_authorize(config_, req);
+                    if (ad == AuthDecision::DENIED_NO_AUTH_CONFIGURED) {
+                        resp = HttpResponse::error(401, "No API authentication configured (fail closed)");
+                        break;
+                    }
+                    if (ad == AuthDecision::DENIED) {
                         resp = HttpResponse::error(401, "Invalid or missing API token");
                         break;
                     }
