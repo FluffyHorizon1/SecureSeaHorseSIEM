@@ -33,6 +33,7 @@ add_executable(SeaHorseClient
 )
 
 target_include_directories(SeaHorseClient PRIVATE ${SRC})
+target_compile_definitions(SeaHorseClient PRIVATE SEAHORSE_VERSION="${SEAHORSE_VERSION}")
 target_link_libraries(SeaHorseClient PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 if(WIN32)
     target_link_libraries(SeaHorseClient PRIVATE ws2_32 iphlpapi wevtapi wtsapi32 psapi)

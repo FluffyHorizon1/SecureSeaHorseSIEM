@@ -1,5 +1,5 @@
 ; =============================================================================
-; SecureSeaHorse SIEM v5.0.0 -- Windows Installer (NSIS)
+; SecureSeaHorse SIEM v5.1.1 -- Windows Installer (NSIS)
 ; =============================================================================
 ; Build: makensis installer\installer_windows.nsi   (run from repo root)
 ; Requires: NSIS 3.x (https://nsis.sourceforge.io)
@@ -11,12 +11,12 @@
 !include "LogicLib.nsh"
 
 !define PRODUCT_NAME "SecureSeaHorse SIEM"
-!define PRODUCT_VERSION "5.0.0"
+!define PRODUCT_VERSION "5.1.1"
 !define PRODUCT_PUBLISHER "SecureSeaHorse Project"
 !define INSTALL_DIR "$PROGRAMFILES\SecureSeaHorse"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "SecureSeaHorse-v5.0.0-Setup.exe"
+OutFile "SecureSeaHorse-v5.1.1-Setup.exe"
 InstallDir "${INSTALL_DIR}"
 RequestExecutionLevel admin
 
@@ -49,7 +49,7 @@ Section "SIEM Server" SEC_SERVER
 
     nsExec::ExecToLog 'sc create SeaHorseServer binPath= "$INSTDIR\server\seahorse-server.exe --config $INSTDIR\server\config\server.conf" start= auto DisplayName= "SecureSeaHorse SIEM Server"'
     nsExec::ExecToLog 'sc description SeaHorseServer "SecureSeaHorse SIEM Server - Security monitoring and threat detection"'
-    nsExec::ExecToLog 'netsh advfirewall firewall add rule name="SeaHorse Server TLS" dir=in action=allow protocol=TCP localport=9443'
+    nsExec::ExecToLog 'netsh advfirewall firewall add rule name="SeaHorse Server TLS" dir=in action=allow protocol=TCP localport=65432'
     nsExec::ExecToLog 'netsh advfirewall firewall add rule name="SeaHorse Dashboard" dir=in action=allow protocol=TCP localport=8080'
 
     WriteUninstaller "$INSTDIR\uninstall.exe"

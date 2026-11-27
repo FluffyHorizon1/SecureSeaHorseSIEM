@@ -314,7 +314,7 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 | `rest_enabled` | `true` | Enable REST API server |
 | `rest_port` | `8080` | REST API port |
 | `rest_bind` | `0.0.0.0` | REST API bind address |
-| `rest_api_token` | `changeme-seahorse-token-2026` | Bearer token for API auth |
+| `rest_api_token` | _(empty; set strong random token)_ | Bearer token for API auth |
 
 #### Phase 8: Incident Response
 

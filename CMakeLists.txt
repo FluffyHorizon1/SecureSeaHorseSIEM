@@ -18,6 +18,10 @@ cmake_minimum_required(VERSION 3.15)
 # =============================================================================
 project(SecureSeaHorseSIEM LANGUAGES CXX)
 
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 option(BUILD_SERVER "Build the SeaHorse analysis server" ON)
 option(BUILD_CLIENT "Build the SeaHorse endpoint agent" ON)
 option(BUILD_TESTS  "Build the test suite (Phase 29)" ON)
