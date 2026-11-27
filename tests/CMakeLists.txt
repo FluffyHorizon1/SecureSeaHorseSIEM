@@ -13,6 +13,7 @@ set(SEAHORSE_TESTS
     test_hunt
     test_ml
     test_parsers
+    test_rest_auth
 )
 
 foreach(t ${SEAHORSE_TESTS})
