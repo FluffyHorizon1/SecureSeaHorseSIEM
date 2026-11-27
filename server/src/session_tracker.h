@@ -27,6 +27,7 @@
 #include <chrono>
 #include <cstdint>
 #include <algorithm>
+#include <regex>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -39,7 +40,6 @@
 #include <utmp.h>
 #include <fstream>
 #include <cstring>
-#include <regex>
 #endif
 
 // =============================================================================
@@ -218,10 +218,14 @@ public:
         if (!config_.track_auth_events) return;
         std::lock_guard<std::mutex> lock(mutex_);
 
+        // Same 4 KiB cap as RegexEngine::analyze -- std::regex has no timeout.
+        std::string text = log_text;
+        if (text.size() > 4096) text.resize(4096);
+
 #ifdef _WIN32
-        parse_windows_auth(log_text, timestamp_ms);
+        parse_windows_auth(text, timestamp_ms);
 #else
-        parse_linux_auth(log_text, timestamp_ms);
+        parse_linux_auth(text, timestamp_ms);
 #endif
 
         // Cap events
@@ -233,6 +237,26 @@ public:
     size_t pending_count() const {
         std::lock_guard<std::mutex> lock(mutex_);
         return pending_events_.size();
+    }
+
+    // Always-compiled text parsers. parse_log_for_auth still dispatches by
+    // host OS; tests call these so Windows Event Log lines can be covered
+    // on Linux CI and vice versa.
+    void parse_windows_auth_text(const std::string& log_text, int64_t timestamp_ms) {
+        if (!config_.track_auth_events) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        parse_windows_auth(log_text, timestamp_ms);
+        if (pending_events_.size() > static_cast<size_t>(config_.max_auth_events))
+            pending_events_.erase(pending_events_.begin(),
+                pending_events_.begin() + static_cast<long>(pending_events_.size() - config_.max_auth_events));
+    }
+    void parse_linux_auth_text(const std::string& log_text, int64_t timestamp_ms) {
+        if (!config_.track_auth_events) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        parse_linux_auth(log_text, timestamp_ms);
+        if (pending_events_.size() > static_cast<size_t>(config_.max_auth_events))
+            pending_events_.erase(pending_events_.begin(),
+                pending_events_.begin() + static_cast<long>(pending_events_.size() - config_.max_auth_events));
     }
 
 private:
@@ -298,24 +322,7 @@ private:
         WTSFreeMemory(pSessions);
     }
 
-    void parse_windows_auth(const std::string& log, int64_t ts) {
-        // Look for EventID patterns in log text
-        // 4624 = successful logon, 4625 = failed logon, 4648 = explicit cred
-        if (log.find("4625") != std::string::npos || log.find("failed") != std::string::npos) {
-            AuthEvent e;
-            e.type = AuthEventType::AUTH_LOGIN_FAILED;
-            e.timestamp_ms = ts;
-            e.detail = "Failed authentication attempt detected in event log";
-            pending_events_.push_back(std::move(e));
-        }
-        if (log.find("4672") != std::string::npos || log.find("special privileges") != std::string::npos) {
-            AuthEvent e;
-            e.type = AuthEventType::AUTH_PRIVILEGE_ESCALATION;
-            e.timestamp_ms = ts;
-            e.detail = "Special privileges assigned (EventID 4672)";
-            pending_events_.push_back(std::move(e));
-        }
-    }
+
 #else
     void scan_linux_sessions(std::vector<SessionEntry>& sessions) {
         // Read from utmp
@@ -347,14 +354,74 @@ private:
         endutent();
     }
 
-    void parse_linux_auth(const std::string& log, int64_t ts) {
-        // sshd: Failed password for user from IP port PORT
+#endif
+
+    // Text parsers are OS-independent and always compiled so unit tests (and a
+    // server that later ingests forwarded logs) can cover both formats.
+    void parse_windows_auth(const std::string& log_in, int64_t ts) {
+        std::string log = log_in;
+        if (log.size() > 4096) log.resize(4096);
+
+        const auto flags = std::regex_constants::ECMAScript | std::regex_constants::icase;
+        // Require a real Event ID token -- a bare "4625" or the word "failed"
+        // previously false-triggered on build numbers, PIDs, and unrelated errors.
+        static const std::regex ev4624(R"((<EventID>4624</EventID>|event\s*id[:\s]*4624\b))", flags);
+        static const std::regex ev4625(R"((<EventID>4625</EventID>|event\s*id[:\s]*4625\b))", flags);
+        static const std::regex ev4648(R"((<EventID>4648</EventID>|event\s*id[:\s]*4648\b))", flags);
+        static const std::regex ev4672(R"((<EventID>4672</EventID>|event\s*id[:\s]*4672\b))", flags);
+        static const std::regex ev4740(R"((<EventID>4740</EventID>|event\s*id[:\s]*4740\b))", flags);
+
+        if (std::regex_search(log, ev4625)) {
+            AuthEvent e;
+            e.type = AuthEventType::AUTH_LOGIN_FAILED;
+            e.timestamp_ms = ts;
+            e.session_type = "windows";
+            e.detail = "Failed authentication (EventID 4625)";
+            pending_events_.push_back(std::move(e));
+        }
+        if (std::regex_search(log, ev4624)) {
+            AuthEvent e;
+            e.type = AuthEventType::AUTH_LOGIN_SUCCESS;
+            e.timestamp_ms = ts;
+            e.session_type = "windows";
+            e.detail = "Successful logon (EventID 4624)";
+            pending_events_.push_back(std::move(e));
+        }
+        if (std::regex_search(log, ev4648)) {
+            AuthEvent e;
+            e.type = AuthEventType::AUTH_LOGIN_SUCCESS;
+            e.timestamp_ms = ts;
+            e.session_type = "windows";
+            e.detail = "Explicit credentials (EventID 4648)";
+            pending_events_.push_back(std::move(e));
+        }
+        if (std::regex_search(log, ev4672)) {
+            AuthEvent e;
+            e.type = AuthEventType::AUTH_PRIVILEGE_ESCALATION;
+            e.timestamp_ms = ts;
+            e.session_type = "windows";
+            e.detail = "Special privileges assigned (EventID 4672)";
+            pending_events_.push_back(std::move(e));
+        }
+        if (std::regex_search(log, ev4740)) {
+            AuthEvent e;
+            e.type = AuthEventType::AUTH_ACCOUNT_LOCKOUT;
+            e.timestamp_ms = ts;
+            e.session_type = "windows";
+            e.detail = "Account locked out (EventID 4740)";
+            pending_events_.push_back(std::move(e));
+        }
+    }
+
+    void parse_linux_auth(const std::string& log_in, int64_t ts) {
+        std::string log = log_in;
+        if (log.size() > 4096) log.resize(4096);
+
         if (log.find("Failed password") != std::string::npos) {
             AuthEvent e;
             e.type = AuthEventType::AUTH_LOGIN_FAILED;
             e.timestamp_ms = ts;
             e.session_type = "ssh";
-            // Extract username and IP
             static const std::regex fail_rx(
                 R"(Failed password for (?:invalid user )?(\S+) from (\S+))",
                 std::regex_constants::icase);
@@ -367,41 +434,42 @@ private:
             pending_events_.push_back(std::move(e));
         }
 
-        // sshd: Accepted password/publickey
-        if (log.find("Accepted") != std::string::npos &&
-            (log.find("password") != std::string::npos || log.find("publickey") != std::string::npos)) {
-            AuthEvent e;
-            e.type = AuthEventType::AUTH_LOGIN_SUCCESS;
-            e.timestamp_ms = ts;
-            e.session_type = "ssh";
+        // Only emit a success when the sshd "Accepted <method> for ... from ..."
+        // shape matches -- a bare "Accepted" + "password" was too broad.
+        {
             static const std::regex acc_rx(
                 R"(Accepted \S+ for (\S+) from (\S+))",
                 std::regex_constants::icase);
             std::smatch m;
             if (std::regex_search(log, m, acc_rx)) {
+                AuthEvent e;
+                e.type = AuthEventType::AUTH_LOGIN_SUCCESS;
+                e.timestamp_ms = ts;
+                e.session_type = "ssh";
                 e.username = m[1].str();
                 e.source_ip = m[2].str();
+                e.detail = "SSH login accepted";
+                pending_events_.push_back(std::move(e));
             }
-            e.detail = "SSH login accepted";
-            pending_events_.push_back(std::move(e));
         }
 
-        // sudo
         if (log.find("sudo") != std::string::npos && log.find("COMMAND") != std::string::npos) {
             AuthEvent e;
             e.type = AuthEventType::AUTH_PRIVILEGE_ESCALATION;
             e.timestamp_ms = ts;
             e.session_type = "sudo";
-            static const std::regex sudo_rx(R"((\S+)\s*:\s*.*COMMAND=(.+))");
+            // Capture the user after "sudo:", not the "sudo" token itself.
+            static const std::regex sudo_rx(R"(sudo:\s+(\S+)\s*:.*COMMAND=(.+))");
             std::smatch m;
             if (std::regex_search(log, m, sudo_rx)) {
                 e.username = m[1].str();
                 e.detail = "sudo: " + m[2].str();
+            } else {
+                e.detail = "sudo COMMAND";
             }
             pending_events_.push_back(std::move(e));
         }
 
-        // su
         if (log.find("su[") != std::string::npos || log.find("su:") != std::string::npos) {
             if (log.find("Successful") != std::string::npos || log.find("session opened") != std::string::npos) {
                 AuthEvent e;
@@ -412,8 +480,6 @@ private:
                 pending_events_.push_back(std::move(e));
             }
         }
-    }
-#endif
-};
+    }};
 
 #endif
