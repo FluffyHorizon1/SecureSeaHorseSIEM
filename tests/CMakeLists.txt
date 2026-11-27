@@ -17,6 +17,7 @@ set(SEAHORSE_TESTS
     test_auth_parsers
     test_auth_log_ingest
     test_log_tail
+    test_rest_auth
 )
 
 foreach(t ${SEAHORSE_TESTS})

@@ -38,6 +38,21 @@ READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
   `client/config/client.conf`, and `LICENSE` to `5.1.1` and marked wired vs
   planned modules accurately.
 
+### Security
+- REST API now fails closed: it starts only with a strong `rest_api_token`
+  and/or RBAC. An empty token is no longer accepted on loopback. Values
+  containing `changeme` are refused on every bind. `rest_allow_noauth`
+  (loopback only) is the development escape hatch. Token comparison is
+  constant-time.
+- **Fresh install:** the shipped `server.conf` has an empty `rest_api_token`
+  and `rbac_enabled = false`, so the dashboard/API will not start until the
+  operator sets a token or enables RBAC (or, for local testing only, sets
+  `rest_allow_noauth = true` on a loopback bind).
+- When `rbac_enabled = true`, `rest_api_token` is ignored and a startup
+  warning is logged. The static token has no tenant and would bypass tenant
+  scoping; tenant JWTs from `POST /api/auth/login` are the only REST
+  credentials.
+
 ---
 
 ## [5.1.0] — 2026-09-18 — Consolidation & Hardening
