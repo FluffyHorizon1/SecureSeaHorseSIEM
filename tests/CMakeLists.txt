@@ -12,6 +12,7 @@ set(SEAHORSE_TESTS
     test_json_escape
     test_hunt
     test_ml
+    test_conf_honest
 )
 
 foreach(t ${SEAHORSE_TESTS})
@@ -23,3 +24,16 @@ foreach(t ${SEAHORSE_TESTS})
     endif()
     add_test(NAME ${t} COMMAND ${t})
 endforeach()
+
+# test_conf_honest opens the shipped conf files from the source tree.
+target_compile_definitions(test_conf_honest PRIVATE
+    "SEAHORSE_SOURCE_DIR=\"${CMAKE_SOURCE_DIR}\"")
+
+# Optional: full unread-key audit (lists every shipped key the code never
+# conf.get-s). Skipped if Python is not on PATH.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME check_conf_keys
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tests/check_conf_keys.py"
+                --root "${CMAKE_SOURCE_DIR}")
+endif()
