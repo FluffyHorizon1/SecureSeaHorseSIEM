@@ -19,6 +19,7 @@
 #include <mutex>
 #include <chrono>
 #include <fstream>
+#include <iostream>
 #include <sstream>
 #include <iomanip>
 #include <ctime>
