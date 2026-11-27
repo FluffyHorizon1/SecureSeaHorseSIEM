@@ -77,6 +77,7 @@ using SOCKET = int;
 #include "rbac.h"                 // Phase 20/31: RBAC, JWT auth, PBKDF2, tenants
 #include "hunt_query.h"           // Phase 23/33: Hunt DSL -> parameterised SQL
 #include "ml_anomaly.h"           // Phase 24/34: isolation forest + beaconing
+#include "sigma_ingest.h"         // v5.2 groundwork: Sigma YAML subset on ingest
 
 // =============================================================================
 // GLOBAL CONTROL
@@ -106,6 +107,7 @@ static std::unique_ptr<CorrelationEngine>  correlator;     // Phase 15
 static std::unique_ptr<SessionScanner>     auth_log_scanner; // MSG_LOG_BATCH parsers
 static std::unique_ptr<RbacManager>        rbac;           // Phase 20/31
 static std::unique_ptr<MlAnomalyDetector>  ml;             // Phase 24/34
+static std::unique_ptr<seahorse::sigma::SigmaPipeline> sigma_pipeline;
 static std::chrono::steady_clock::time_point server_start_time;
 
 // Phase 3 config
@@ -365,6 +367,23 @@ void process_report(RawTelemetry& current) {
         // Phase 2: Alert evaluation
         if (alert_engine && !sec_events.empty()) {
             alert_engine->ingest(current.device_id, current.machine_ip, sec_events);
+        }
+
+        // Sigma subset (off unless sigma_enabled=true). Keyword-style rules
+        // match the raw log chunk; field-map rules need structured fields
+        // that this telemetry path does not populate. Bad rules were skipped
+        // at load; evaluate errors are swallowed inside the pipeline.
+        if (sigma_pipeline && sigma_pipeline->enabled()) {
+            auto sigma_hits = sigma_pipeline->evaluate_and_alert(
+                raw_log, current.device_id, current.machine_ip, alert_engine.get());
+            if (pg_store) {
+                for (const auto& h : sigma_hits) {
+                    pg_store->insert_security_event(
+                        current.device_id, current.timestamp_ms,
+                        current.machine_ip,
+                        h.rule_id, h.level, "sigma", h.title);
+                }
+            }
         }
 
         // --- Baseline check ---
@@ -1278,6 +1297,24 @@ int main(int argc, char* argv[]) {
     }
 
     // -------------------------------------------------------------------------
+    // SIGMA SUBSET (v5.2 groundwork): off by default.
+    // -------------------------------------------------------------------------
+    {
+        seahorse::sigma::SigmaPipeline::Config sc;
+        sc.enabled   = conf.get_bool("sigma_enabled", false);
+        sc.rules_dir = conf.get("sigma_rules_dir", "sigma");
+        sigma_pipeline = std::make_unique<seahorse::sigma::SigmaPipeline>();
+        auto slog = [](const std::string& m) {
+            if (!logger) return;
+            const bool warn = m.find("skipped") != std::string::npos
+                           || m.find("failed") != std::string::npos
+                           || m.find("empty") != std::string::npos;
+            logger->log(warn ? AsyncLogger::WARN : AsyncLogger::INFO, m);
+        };
+        sigma_pipeline->load(sc, slog);
+    }
+
+    // -------------------------------------------------------------------------
     // PHASE 4 [TRAFFIC CLASSIFIER]: Initialize exploit detection engine
     // -------------------------------------------------------------------------
     {
@@ -2013,6 +2050,7 @@ int main(int argc, char* argv[]) {
     threat_intel.reset();
     classifier.reset();
     alert_engine.reset();
+    sigma_pipeline.reset();
     pg_store.reset();
     regex_engine.reset();
     csv_writer.reset();

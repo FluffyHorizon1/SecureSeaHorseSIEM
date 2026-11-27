@@ -1,0 +1,21 @@
+title: Suspicious script interpreter
+id: 8f3c1a10-0c6b-4b2e-9d11-51e0a8c00004
+status: experimental
+level: medium
+logsource:
+  product: linux
+  category: process_creation
+detection:
+  selection_interp:
+    Image|endswith:
+      - '/python'
+      - '/python3'
+      - '/perl'
+      - '/ruby'
+  selection_susp_curl:
+    CommandLine|contains: 'curl '
+  selection_susp_pipe:
+    CommandLine|contains: '| sh'
+  selection_susp_tmp:
+    CommandLine|startswith: '/tmp/'
+  condition: selection_interp and 1 of selection_susp*

@@ -24,9 +24,9 @@
 #include <iomanip>
 #include <ctime>
 #include <atomic>
+#include <iostream>
 
-// Forward declaration
-struct SecurityEvent;
+#include "regex_engine.h"  // SecurityEvent (inline methods need the complete type)
 
 // =============================================================================
 // ALERT CONFIG -- Per-category thresholds
@@ -141,6 +141,46 @@ public:
                 }
             }
         }
+    }
+
+    // Fire a Sigma (or other direct) hit immediately, without a count/window
+    // threshold. Written to the same alert log as threshold alerts, with
+    // rule id, title and level. No-ops when the alert engine is disabled.
+    void raise_sigma(int32_t device_id, const std::string& machine_ip,
+                     const std::string& rule_id,
+                     const std::string& title,
+                     const std::string& level,
+                     const std::string& matched_text)
+    {
+        if (!config_.enabled) return;
+
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        total_alerts_fired_++;
+
+        auto wall_now = std::chrono::system_clock::now();
+        std::time_t t = std::chrono::system_clock::to_time_t(wall_now);
+
+        std::string text = matched_text;
+        if (text.size() > 512) text.resize(512);
+
+        std::stringstream ss;
+        ss << "[" << std::put_time(std::localtime(&t), "%Y-%m-%d %H:%M:%S") << "] "
+           << "[ALERT] "
+           << "device=" << device_id
+           << " ip=" << machine_ip
+           << " category=sigma"
+           << " severity=" << level
+           << " rule=" << rule_id
+           << " title=" << title
+           << " level=" << level
+           << " | " << text;
+
+        std::string alert_line = ss.str();
+        if (alert_file_.is_open()) {
+            alert_file_ << alert_line << "\n";
+            alert_file_.flush();
+        }
+        std::cerr << "\033[1;31m" << alert_line << "\033[0m\n";
     }
 
     // --- Diagnostics ---
