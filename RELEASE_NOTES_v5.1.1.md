@@ -1,8 +1,10 @@
 # SecureSeaHorse SIEM v5.1.1 — Windows CI Fix & Docs Truth-Up
 
 **DRAFT: not released.** This describes branch `v5.1.1-prep` as of 27 Nov 2026
-(Europe/London). It is not on `main`, has no release tag, and is not a
-shipping announcement. Full history: `CHANGELOG.md`. Detection inventory:
+(Europe/London), after PRs #13, #16, #17 and #22 were merged into it. It has
+no release tag and is not a shipping announcement. Open PRs #14, #18, #19,
+#20 and #21 are listed separately below and are not part of this description
+until they merge. Full history: `CHANGELOG.md`. Detection inventory:
 `docs/DETECTIONS.md`.
 
 Line: v5.1 patch (defensive / docs / CI only on this branch).
@@ -26,6 +28,16 @@ file.
   names, `rest_bind = 127.0.0.1`, installer cert names, stale `changeme-*`
   examples removed from docs.
 
+**Security / CI / docs (merged 27 Nov 2026)**
+- REST API fails closed (#13): it starts only with a strong `rest_api_token`
+  and/or RBAC; an empty token is no longer accepted on loopback; values
+  containing `changeme` are refused on every bind; `rest_allow_noauth`
+  (loopback only) is the dev escape hatch. With `rbac_enabled = true` the
+  static token is ignored, so it cannot bypass tenant scoping.
+- gitleaks secret-scan workflow with a baseline for the historical
+  `changeme-*` placeholders (#16).
+- `docs/THREAT_MODEL.md` (#17) and `docs/PILOT_READINESS.md` (#22).
+
 **Changed**
 - `SEAHORSE_VERSION` from `VERSION` is wired into the client as well as the
   server; CI checks `SeaHorseClient --version`.
@@ -43,19 +55,21 @@ file.
 
 ## Fresh-install token note (current `v5.1.1-prep` behaviour)
 
-This is unchanged from v5.1.0 Phase 28, but it still bites a first boot:
+Fresh installs need a REST credential before the dashboard/API will start:
 
-- Default `rest_bind` is `127.0.0.1`. The shipped `rest_api_token` is empty.
-  `rbac_enabled` defaults to false.
-- The server **refuses to start the REST API / dashboard on a non-loopback
-  bind** if `rest_api_token` is empty or contains `changeme`
-  (`server/src/server.cpp`). The rest of the SIEM continues.
-- On a loopback bind, an empty token is allowed with a warning. Do not
-  expose port 8080; put TLS and access control on a reverse proxy if the
-  dashboard is needed off-box.
-- A value containing `changeme` is treated as a shipped default and rejected
-  off-loopback. JWT secret empty-or-`changeme` is similarly rejected for
-  RBAC (`server/src/server.cpp`).
+- Default `rest_bind` is `127.0.0.1`. The shipped `rest_api_token` is empty
+  and `rbac_enabled` defaults to false.
+- With no strong token and no RBAC, the REST API / dashboard **does not
+  start**, on any bind, including loopback (`server/src/server.cpp`). The rest
+  of the SIEM keeps ingesting. `rest_allow_noauth = true` is a local-testing
+  escape hatch and is honoured only on a loopback bind.
+- A token containing `changeme` is treated as a shipped default and refused on
+  every bind. The RBAC JWT secret is similarly refused if empty or
+  `changeme`.
+- With `rbac_enabled = true`, `rest_api_token` is ignored. Use a tenant JWT
+  from `POST /api/auth/login`.
+- Do not expose port 8080 directly; put TLS and access control on a reverse
+  proxy if the dashboard is needed off-box.
 
 To bring the dashboard up on a managed host: set a strong unique
 `rest_api_token`, **or** enable RBAC, set a 32+ byte `rbac_jwt_secret`, and
@@ -75,38 +89,36 @@ If any live or staging install ever used a pre-Phase-28 config (published
    a placeholder) was committed.
 4. Do not put live values in this repository, tickets, or chat.
 
-A gitleaks scan and baseline for the historical placeholders exists only on
-the pending `ci/secret-scan-gitleaks` branch (below).
+A gitleaks scan and baseline for the historical placeholders now runs in CI
+(#16).
 
 ## Breaking changes
 
-On `v5.1.1-prep` itself: **none beyond v5.1.0**. This patch does not change
-the wire protocol, database schema, or REST contract. Operators who skipped
-the v5.1.0 fail-closed REST change should still read the fresh-install token
-note above.
+On `v5.1.1-prep` as merged today: no change to the wire protocol, database
+schema or REST routes. Behaviour changes from #13 that operators will notice:
 
-Pending review branches (not in this tree) do include behavioural breaks;
-see below.
+- An empty `rest_api_token` is no longer accepted on loopback; set a token,
+  enable RBAC, or opt in with `rest_allow_noauth = true` (loopback only).
+- With RBAC on, a static `rest_api_token` is ignored. Anything that used
+  RBAC and the static token together must switch to a JWT.
 
-## Pending review (not released, not in this tree)
+## Open PRs into `v5.1.1-prep` (not merged, not in the description above)
 
-Four branches were pushed 26 Nov 2026, all Linux + Windows CI green, and
-have **not** been merged. They are listed so reviewers and a future release
-can see what is queued. They are not part of `v5.1.1-prep`.
-
-| Branch | Remote tip | What it does | Notes for operators |
+| PR | Branch | What it does | Notes for operators |
 |---|---|---|---|
-| `hardening/rest-auth-fail-closed` | `25b97615` | Tightens fail-closed REST. When RBAC is on, the static `rest_api_token` is ignored and cleared (no tenant-bypass). | **Breaking if you use RBAC + a static token together today.** Fresh install with empty token + RBAC off will not start the API off-loopback (already true on prep); `rest_allow_noauth` is loopback-only. |
-| `hardening/login-rate-limit` | `3a633886` | Failed-login throttle (per username and per IP, 429 + Retry-After) before password hashing. Optional `rest_trusted_proxies` (IPv4 exact addresses, right-most untrusted XFF hop). | New config keys. Default proxies empty/off. Merging with the rest-auth branch needs a manual `RestConfig` conflict resolution (keep both auth fields and `trusted_proxies`). |
-| `ci/secret-scan-gitleaks` | `c2bb3a7c` | Gitleaks workflow, project rules, baseline for historical `changeme-*`. | CI-only; no runtime behaviour change. |
-| `security/threat-model-v511` | `3c2d4ef2` | `docs/THREAT_MODEL.md` rebased onto `v5.1.1-prep`. | Docs only. Do not force-update `security/threat-model` on `main`. |
+| #14 | `hardening/login-rate-limit` | Failed-login throttle (per username and per IP, 429 + Retry-After) before password hashing. Optional `rest_trusted_proxies` (IPv4 exact addresses, right-most untrusted XFF hop). | New keys `login_max_failures`, `login_ip_max_failures`, `login_window_s`, `login_lockout_s`. Proxies empty/off by default. |
+| #18 | `fix/config-honest-flags` | Shipped configs no longer set unwired features (Sigma, reports, USB, WebSocket) to true; adds a config-key audit test. | Config-only. |
+| #19 | `fix/auth-log-inputs` | Windows 4624/4625 and Linux `auth.log`/`secure` collection, sent as `MSG_LOG_BATCH`. | Needed before any claim of logon detection. Agent and server must both be updated. |
+| #20 | `test/parser-coverage` | Parser unit tests, syslog parser, `session_tracker.h` / `regex_engine.h` fixes. | Overlaps #19 in `session_tracker.h`. |
+| #21 | `feature/sigma-rules` | Sigma YAML subset engine and ingest behind `sigma_enabled` (default false). | Off by default. |
 
-Do not treat this table as permission to merge or to push further.
+Do not treat this table as permission to merge or to push further. If these
+merge before the v5.1.1 cut, move them into "What is actually on" and
+update `docs/DETECTIONS.md`, which still describes `v5.1.1-prep` without them.
 
 ## Verification
 
-Linux tests on `v5.1.1-prep`: 6/6 ctest (existing suite). Windows CI is
-green on the remote tip `fc9bdb0c` (run 45715978761, 25 Nov). The four
-pending branches are also Linux + Windows green; see the 26–27 Nov overnight
-notes. This draft does not republish binary hashes; regenerate them at
-release time with `./scripts/generate_sums.sh`.
+Re-run `ctest` and the Linux and Windows CI jobs on the exact commit you tag;
+the numbers in earlier drafts of this file referred to older tips. This draft
+does not republish binary hashes; regenerate them at release time with
+`./scripts/generate_sums.sh`.

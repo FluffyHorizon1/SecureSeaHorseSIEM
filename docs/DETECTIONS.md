@@ -1,5 +1,7 @@
 # Detections inventory (v5.1.1-prep)
 
+> Point-in-time (27 Nov 2026). It describes `v5.1.1-prep` without the open PRs #19 (auth logs), #20 (parser tests) and #21 (Sigma). Update it when any of those merge.
+
 **Audience:** Lead Researcher, before any design-partner outreach.
 
 **Rule:** this list is taken from the code on `v5.1.1-prep` unless a section
