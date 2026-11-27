@@ -5,6 +5,8 @@
 # =============================================================================
 set(SERVER_SRC "${CMAKE_SOURCE_DIR}/server/src")
 
+set(CLIENT_SRC "${CMAKE_SOURCE_DIR}/client/src")
+
 set(SEAHORSE_TESTS
     test_wire_parse
     test_deserializers
@@ -12,12 +14,15 @@ set(SEAHORSE_TESTS
     test_json_escape
     test_hunt
     test_ml
+    test_auth_parsers
+    test_auth_log_ingest
+    test_log_tail
 )
 
 foreach(t ${SEAHORSE_TESTS})
     add_executable(${t} ${t}.cpp)
     target_compile_features(${t} PRIVATE cxx_std_17)
-    target_include_directories(${t} PRIVATE ${SERVER_SRC} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_include_directories(${t} PRIVATE ${SERVER_SRC} ${CLIENT_SRC} ${CMAKE_CURRENT_SOURCE_DIR})
     if(MSVC)
         target_compile_definitions(${t} PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
     endif()
