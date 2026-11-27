@@ -1505,31 +1505,39 @@ int main(int argc, char* argv[]) {
         rest_cfg.api_token    = conf.get("rest_api_token", "");
         rest_cfg.cors_origin  = conf.get("rest_cors_origin", "");
 
+        rest_cfg.allow_unauthenticated = conf.get_bool("rest_allow_noauth", false);
+        if (rbac) {
+            // RBAC on: a valid tenant JWT is the ONLY accepted REST credential.
+            // The static rest_api_token is ignored (it has no tenant and would
+            // bypass tenant scoping). Per-route role checks still apply via rbac_require.
+            rest_cfg.alt_auth = [](const HttpRequest& r) {
+                return rbac && rbac->verify_jwt(r.bearer_token()).valid;
+            };
+        }
+
         // ---------------------------------------------------------------------
-        // PHASE 28: fail closed. The REST API must never be reachable off-box
-        // without a real token. Refuse to expose it when the bind address is not
-        // loopback AND the token is empty or a shipped default. This closes the
-        // exposure (review 4.2) without taking down the core TLS SIEM, which
-        // keeps ingesting telemetry regardless.
+        // PHASE 28 (tightened): fail closed. The REST API only starts with a real
+        // credential: a strong rest_api_token and/or RBAC. An empty token is no
+        // longer accepted implicitly on loopback -- local development must opt in
+        // with rest_allow_noauth = true. A shipped "changeme" token is refused on
+        // any bind. The core TLS SIEM keeps ingesting regardless.
         // ---------------------------------------------------------------------
         {
-            const std::string& b = rest_cfg.bind_address;
-            bool loopback = (b == "127.0.0.1" || b == "::1" || b == "localhost");
-            bool token_weak = rest_cfg.api_token.empty()
-                || rest_cfg.api_token.find("changeme") != std::string::npos;
-            if (rest_cfg.enabled && !loopback && token_weak) {
+            RestExposure ex = rest_exposure_decision(
+                rest_cfg.enabled, rest_cfg.bind_address, rest_cfg.api_token,
+                rbac != nullptr, rest_cfg.allow_unauthenticated);
+            if (rest_cfg.enabled && !ex.enable) {
                 logger->log(AsyncLogger::ERROR_LOG,
-                    "REST API: refusing to start on non-loopback bind '" + b +
-                    "' with an empty or default rest_api_token. Set a strong "
-                    "rest_api_token (or bind to 127.0.0.1). Core SIEM continues; "
-                    "the dashboard/API stays DOWN until this is fixed.");
+                    "REST API: refusing to start: " + ex.message +
+                    " Core SIEM continues; the dashboard/API stays DOWN until this is fixed.");
                 rest_cfg.enabled = false;
-            } else if (rest_cfg.enabled && loopback && token_weak) {
-                logger->log(AsyncLogger::WARN,
-                    "REST API: no rest_api_token set -- allowed only because bind "
-                    "is loopback (" + b + "). Do NOT expose this port; set a token "
-                    "before binding to a routable address.");
+            } else if (ex.warn) {
+                logger->log(AsyncLogger::WARN, "REST API: " + ex.message);
             }
+            // RBAC on: drop the static token so it cannot be used even if a later
+            // change forgets the rest_authorize() "ignore when alt_auth is set" rule.
+            if (rest_cfg.enabled && rbac && !rest_cfg.api_token.empty())
+                rest_cfg.api_token.clear();
         }
 
         if (rest_cfg.enabled) {
@@ -1868,7 +1876,7 @@ int main(int argc, char* argv[]) {
             if (rest_server->start()) {
                 logger->log(AsyncLogger::INFO,
                     "REST API: ENABLED on port " + std::to_string(rest_cfg.port)
-                    + " | auth=" + (rest_cfg.api_token.empty() ? "none" : "token")
+                    + " | auth=" + (rest_cfg.api_token.empty() ? (rbac ? "rbac" : "none") : (rbac ? "token+rbac" : "token"))
                     + " | dashboard at http://localhost:" + std::to_string(rest_cfg.port) + "/");
             } else {
                 logger->log(AsyncLogger::ERROR_LOG,
