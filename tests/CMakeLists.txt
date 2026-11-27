@@ -14,6 +14,7 @@ set(SEAHORSE_TESTS
     test_ml
     test_sigma
     test_sigma_ingest
+    test_rest_auth
 )
 
 foreach(t ${SEAHORSE_TESTS})

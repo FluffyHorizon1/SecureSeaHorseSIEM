@@ -313,7 +313,8 @@ All settings use `key = value` format. Lines starting with `#` are comments.
 | `rest_enabled` | `true` | Enable REST API server |
 | `rest_port` | `8080` | REST API port |
 | `rest_bind` | `127.0.0.1` | REST API bind address (loopback default; requires strong token if non-loopback) |
-| `rest_api_token` | _(empty)_ | Bearer token for API auth (required when `rest_bind` is non-loopback) |
+| `rest_api_token` | _(empty)_ | Bearer token for API auth when RBAC is off. The API **refuses to start** with no token and no RBAC (any bind); values containing `changeme` are rejected. **Ignored when `rbac_enabled = true`** (it would bypass tenant scoping). Fresh installs must set a token or enable RBAC before the dashboard starts |
+| `rest_allow_noauth` | `false` | Dev only: allow an unauthenticated API when bound to loopback with no token and RBAC off |
 | `rest_cors_origin` | _(empty)_ | Allowed CORS origin (empty = same-origin only; never use `*` with tokens) |
 
 #### Phase 8: Incident Response
@@ -715,7 +716,7 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:8080/api/correlations
 
 ## 9. Web Dashboard Guide
 
-Access the dashboard at `http://your-server:8080/`. On first visit, you will see a login screen asking for the API token (configured in `server.conf` as `rest_api_token`).
+Access the dashboard at `http://your-server:8080/`. On first visit, you will see a login screen asking for the API token (configured in `server.conf` as `rest_api_token`). A fresh install ships with an empty token and RBAC off, so the REST API (and dashboard) does not start until a `rest_api_token` is set or `rbac_enabled = true`. When RBAC is on, `rest_api_token` is ignored; obtain a JWT from `POST /api/auth/login` and use it as the bearer token; for throw-away local testing only, `rest_allow_noauth = true` on a loopback bind skips authentication.
 
 The dashboard displays:
 
