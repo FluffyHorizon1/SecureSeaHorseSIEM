@@ -32,6 +32,14 @@
 #include "connection_inventory.h" // Phase 12: Connection inventory
 #include "session_tracker.h"     // Phase 13: Session & auth tracking
 #include "software_inventory.h"  // Phase 14: Software inventory
+#include "log_batch.h"           // MSG_LOG_BATCH (0x0C)
+#ifdef _WIN32
+#include "win_event_log.h"
+#else
+#include "log_tail.h"
+#endif
+#include <filesystem>
+#include <system_error>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -98,6 +106,41 @@ static std::atomic<bool> fim_initial_scan_done{false};
 static std::unique_ptr<ProcessScanner>    proc_scanner;     // Phase 11
 static std::unique_ptr<ConnectionScanner> conn_scanner;     // Phase 12
 static std::unique_ptr<SessionScanner>    sess_scanner;     // Phase 13
+
+// Auth-log collection (MSG_LOG_BATCH). Offsets / Evt bookmarks are committed
+// only after a successful send.
+static bool   g_auth_log_enabled = true;
+static int    g_auth_log_max_events = 32;
+static size_t g_auth_log_max_bytes  = kLogBatchMaxBytes;
+static LogBatch              g_pending_batch;
+#ifdef _WIN32
+static std::string           g_ev_bookmark_path;
+static std::string           g_pending_bookmark_xml;
+#else
+static std::unique_ptr<LogTailTracker> g_log_tailer;
+static std::vector<FileCursor>         g_pending_tail_commits;
+#endif
+
+static void auth_log_reset_pending() {
+    g_pending_batch = LogBatch{};
+#ifdef _WIN32
+    g_pending_bookmark_xml.clear();
+#else
+    g_pending_tail_commits.clear();
+#endif
+}
+
+static void preview_into_chunk(RawTelemetry& r, const std::string& text) {
+    if (text.empty()) return;
+    const size_t cap = sizeof(r.raw_log_chunk) - 1;
+    if (text.size() <= cap) {
+        safe_strncpy(r.raw_log_chunk, text.c_str(), sizeof(r.raw_log_chunk));
+    } else {
+        // Keep the tail so the newest line / Event XML suffix is visible to regex.
+        std::string tail = text.substr(text.size() - cap);
+        safe_strncpy(r.raw_log_chunk, tail.c_str(), sizeof(r.raw_log_chunk));
+    }
+}
 static std::unique_ptr<SoftwareScanner>   sw_scanner;       // Phase 14
 static std::atomic<bool> proc_initial_done{false};
 static std::atomic<bool> conn_initial_done{false};
@@ -340,44 +383,120 @@ void get_raw_network(RawTelemetry& r) {
 #endif
 }
 
+bool send_exact_ssl(SSL* ssl, const void* buf, int len);
+
 void scrape_logs(RawTelemetry& r) {
     std::lock_guard<std::mutex> lock(scrape_mutex);
     std::memset(r.raw_log_chunk, 0, sizeof(r.raw_log_chunk));
+    auth_log_reset_pending();
+    if (!g_auth_log_enabled) return;
+
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    g_pending_batch.timestamp_ms = now_ms;
+
 #ifdef _WIN32
-    const wchar_t* query = L"Event/System[Level<=3]";
-    EVT_HANDLE hResults = EvtQuery(NULL, L"Security", query, EvtQueryChannelPath | EvtQueryReverseDirection);
-    if (!hResults) hResults = EvtQuery(NULL, L"System", query, EvtQueryChannelPath | EvtQueryReverseDirection);
-    if (hResults) {
-        EVT_HANDLE hEvent = NULL;
-        DWORD dwReturned = 0;
-        if (EvtNext(hResults, 1, &hEvent, 1000, 0, &dwReturned)) {
-            DWORD bufUsed = 0, propCount = 0;
-            EvtRender(NULL, hEvent, EvtRenderEventXml, 0, NULL, &bufUsed, &propCount);
-            if (bufUsed > 0) {
-                std::vector<wchar_t> buf(bufUsed / sizeof(wchar_t) + 1);
-                if (EvtRender(NULL, hEvent, EvtRenderEventXml, bufUsed, buf.data(), &bufUsed, &propCount)) {
-                    std::wstring ws(buf.data());
-                    std::string narrow(ws.begin(), ws.end());
-                    safe_strncpy(r.raw_log_chunk, narrow.c_str(), sizeof(r.raw_log_chunk));
-                }
-            }
-            EvtClose(hEvent);
-        }
-        EvtClose(hResults);
+    auto poll = win_event_log::poll_security_logons(g_ev_bookmark_path, g_auth_log_max_events);
+    g_pending_bookmark_xml = poll.bookmark_xml;
+    if (poll.baseline) {
+        // First run / stale bookmark: persist the anchor immediately so the
+        // next cycle starts from "now". No historical events are sent.
+        if (!g_pending_bookmark_xml.empty())
+            win_event_log::persist_bookmark(g_ev_bookmark_path, g_pending_bookmark_xml);
+        return;
     }
+    std::string preview;
+    size_t used = 0;
+    for (const auto& xml : poll.events_xml) {
+        if (static_cast<int>(g_pending_batch.records.size()) >= g_auth_log_max_events) break;
+        if (used + xml.size() > g_auth_log_max_bytes) break;
+        LogRecord rec;
+        rec.source = kAuthSourceWindowsSecurity;
+        rec.timestamp_ms = now_ms;
+        rec.text = xml;
+        used += xml.size();
+        preview = xml;  // last event is the preview
+        g_pending_batch.records.push_back(std::move(rec));
+    }
+    preview_into_chunk(r, preview);
 #else
-    const char* paths[] = { "/var/log/syslog", "/var/log/messages" };
-    for (const char* path : paths) {
-        std::ifstream f(path, std::ios::binary | std::ios::ate);
-        if (f.is_open()) {
-            std::streamsize size = f.tellg();
-            std::streamsize read_sz = std::min((std::streamsize)sizeof(r.raw_log_chunk) - 1, size);
-            f.seekg(-read_sz, std::ios::end);
-            f.read(r.raw_log_chunk, read_sz);
-            break;
+    if (!g_log_tailer) return;
+
+    auto ingest_file = [&](const std::string& path, const char* source) -> bool {
+        auto rd = g_log_tailer->read_new(path, g_auth_log_max_bytes);
+        // Always queue the cursor: baseline and empty reads must still advance
+        // (or hold) state so we don't re-baseline every cycle.
+        g_pending_tail_commits.push_back(rd.cursor);
+        if (rd.baseline) {
+            // Commit baseline immediately (EOF anchor, no data).
+            g_log_tailer->commit(rd.cursor);
+            // Drop it from pending so we don't double-commit later.
+            g_pending_tail_commits.pop_back();
+            return false; // path existed but was baselined
         }
+        if (rd.data.empty()) return false;
+        auto lines = split_log_lines(rd.data);
+        std::string last_line;
+        for (const auto& line : lines) {
+            if (static_cast<int>(g_pending_batch.records.size()) >= g_auth_log_max_events) break;
+            LogRecord rec;
+            rec.source = source;
+            rec.timestamp_ms = now_ms;
+            rec.text = line;
+            last_line = line;
+            g_pending_batch.records.push_back(std::move(rec));
+        }
+        preview_into_chunk(r, last_line);
+        return true;
+    };
+
+    // Auth first (auth.log or secure), then syslog/messages. Each family
+    // uses the first path that exists; if both auth paths exist both are read.
+    bool saw_auth = false;
+    for (const char* path : { "/var/log/auth.log", "/var/log/secure" }) {
+        struct stat st {};
+        if (stat(path, &st) != 0) continue;
+        ingest_file(path, kAuthSourceLinuxAuth);
+        saw_auth = true;
+    }
+    for (const char* path : { "/var/log/syslog", "/var/log/messages" }) {
+        struct stat st {};
+        if (stat(path, &st) != 0) continue;
+        ingest_file(path, kAuthSourceLinuxSyslog);
+        break; // same "first existing" policy as the original scrape
+    }
+    (void)saw_auth;
+#endif
+}
+
+bool send_log_batch(SSL* ssl, int32_t device_id, const uint8_t* hmac_key) {
+    if (g_pending_batch.records.empty()) return true;
+    g_pending_batch.device_id = device_id;
+    std::string data = serialize_log_batch(g_pending_batch);
+    if (data.size() > 1048576) return false;
+    PacketHeaderV2 hdr = build_v2_header(MSG_LOG_BATCH,
+        static_cast<uint32_t>(data.size()),
+        reinterpret_cast<const uint8_t*>(data.data()), hmac_key);
+    if (!send_exact_ssl(ssl, &hdr, sizeof(hdr))) return false;
+    if (!send_exact_ssl(ssl, data.data(), static_cast<int>(data.size()))) return false;
+    if (logger) {
+        logger->log(AsyncLogger::DEBUG, "LOG_BATCH sent records="
+            + std::to_string(g_pending_batch.records.size()));
+    }
+    return true;
+}
+
+void commit_auth_log_state() {
+#ifdef _WIN32
+    if (!g_pending_bookmark_xml.empty())
+        win_event_log::persist_bookmark(g_ev_bookmark_path, g_pending_bookmark_xml);
+#else
+    if (g_log_tailer) {
+        for (const auto& c : g_pending_tail_commits)
+            g_log_tailer->commit(c);
     }
 #endif
+    auth_log_reset_pending();
 }
 
 // =============================================================================
@@ -832,6 +951,30 @@ int main(int argc, char* argv[]) {
         logger->log(AsyncLogger::INFO, "Session Tracker: ENABLED | scan every " + std::to_string(sess_interval) + "s");
     }
 
+    // Auth-log collection: Event IDs 4624/4625/... on Windows; auth.log or
+    // secure plus syslog on Linux. State lives under auth_log_state_dir.
+    g_auth_log_enabled     = conf.get_bool("auth_log_enabled", true);
+    g_auth_log_max_events  = conf.get_int("auth_log_max_events_per_cycle", 32);
+    if (g_auth_log_max_events < 1) g_auth_log_max_events = 1;
+    if (g_auth_log_max_events > kLogBatchMaxRecords) g_auth_log_max_events = kLogBatchMaxRecords;
+    int max_bytes = conf.get_int("auth_log_max_bytes_per_cycle", static_cast<int>(kLogBatchMaxBytes));
+    if (max_bytes < 1024) max_bytes = 1024;
+    if (max_bytes > 1048576) max_bytes = 1048576;
+    g_auth_log_max_bytes = static_cast<size_t>(max_bytes);
+    std::string state_dir = conf.get("auth_log_state_dir", ".seahorse");
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(state_dir, ec);
+    }
+#ifdef _WIN32
+    g_ev_bookmark_path = state_dir + "/evt_security.bookmark";
+#else
+    g_log_tailer = std::make_unique<LogTailTracker>(state_dir + "/log_tail.state");
+#endif
+    if (g_auth_log_enabled) {
+        logger->log(AsyncLogger::INFO, std::string("Auth log collection: ENABLED | state=") + state_dir);
+    }
+
     // -------------------------------------------------------------------------
     // Phase 14: Software Inventory
     // -------------------------------------------------------------------------
@@ -1052,6 +1195,19 @@ int main(int argc, char* argv[]) {
                 ok = send_telemetry_v1(ssl, r_net);
             }
             if (!ok) break;
+
+            // Auth / syslog batch. HMAC/v2 only -- old v1 servers have no
+            // message type for this, and the 512-byte raw_log_chunk already
+            // carried a preview in the telemetry packet above.
+            if (ok && hmac_active && !g_pending_batch.records.empty()) {
+                if (!send_log_batch(ssl, my_id, hmac_key)) break;
+                commit_auth_log_state();
+            } else if (g_pending_batch.records.empty()) {
+                // Still commit Linux empty-read cursors / already-handled baseline.
+#ifndef _WIN32
+                commit_auth_log_state();
+#endif
+            }
 
             // --- Heartbeat ping (if interval elapsed) ---
             if (hmac_active && heartbeat_interval > 0) {
