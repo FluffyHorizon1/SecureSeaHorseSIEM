@@ -11,6 +11,9 @@ break. `MINOR` jumps add features. `PATCH` is defensive-only.
 
 ## [5.1.1] — 2026-11-25 — Windows CI Fix & Docs Truth-Up
 
+**DRAFT: not released.** This section describes branch `v5.1.1-prep`. It is
+not on `main` and has no release tag. See `RELEASE_NOTES_v5.1.1.md`.
+
 **Headline.** Patch release restoring the Windows vcpkg CI build, unifying
 client and server version reporting under `VERSION`, and aligning `ROADMAP.md`,
 READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
@@ -52,6 +55,38 @@ READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
   warning is logged. The static token has no tenant and would bypass tenant
   scoping; tenant JWTs from `POST /api/auth/login` are the only REST
   credentials.
+
+### CI and docs (merged into `v5.1.1-prep`)
+- Added a gitleaks secret-scan workflow with project rules and a baseline for
+  the historical `changeme-*` placeholders (#16). Do not reintroduce
+  real-looking secrets.
+- Added `docs/THREAT_MODEL.md` (STRIDE, hosted multi-tenant scope) (#17).
+- Added `docs/PILOT_READINESS.md`, design-partner notes for a managed
+  service (#22).
+- Added `docs/DETECTIONS.md`, an inventory of what the code detects today, and
+  draft `RELEASE_NOTES_v5.1.1.md` (#23).
+
+### Queued in open PRs into `v5.1.1-prep` (NOT yet merged)
+Move each of these into the sections above when its PR merges, and delete
+this block before tagging. Check `git log` rather than this list if unsure.
+- #14 `hardening/login-rate-limit`: failed-login throttle on
+  `POST /api/auth/login` (per username and per client IP, HTTP 429 with
+  `Retry-After`, checked before password hashing). New keys
+  `login_max_failures`, `login_ip_max_failures`, `login_window_s`,
+  `login_lockout_s`. `rest_trusted_proxies` (empty/off by default) honours
+  `X-Forwarded-For` only from listed IPv4 exact-address peers; no CIDR, no IPv6.
+- #18 `fix/config-honest-flags`: shipped configs no longer advertise features
+  that are not wired (Sigma, reports, USB, WebSocket and similar flags that
+  nothing reads are now `false`); adds a config-key audit
+  (`tests/check_conf_keys.py`, `test_conf_honest`).
+- #19 `fix/auth-log-inputs`: agent reads Windows Security logon events
+  (4624/4625) and Linux `auth.log`/`secure`, shipped as `MSG_LOG_BATCH`
+  (`docs/AUTH_LOG_PROTOCOL.md`). Until this merges, logon detection is not live.
+- #20 `test/parser-coverage`: parser unit tests (`test_parsers`), a syslog
+  parser in `syslog_ingestor.h`, and `session_tracker.h`/`regex_engine.h`
+  fixes. Overlaps #19 in `session_tracker.h`.
+- #21 `feature/sigma-rules`: Sigma YAML subset engine and ingest, behind
+  `sigma_enabled` (default false).
 
 ---
 
