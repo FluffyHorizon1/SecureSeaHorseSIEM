@@ -1,12 +1,20 @@
 // Unit tests for Linux offset tracking, first-run baseline, and rotation.
+// Skipped on Windows: this tailer is inode/offset based and is not used
+// on the Windows scrape path (see win_event_log.h).
 #include "test_util.h"
+
+#ifdef _WIN32
+int main() {
+    std::printf("test_log_tail: skipped on Windows (Linux inode/offset tailer)\n");
+    return 0;
+}
+#else
 #include "log_tail.h"
 
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <unistd.h>
-#include <sys/stat.h>
 
 static void write_file(const std::string& path, const std::string& body, bool append = false) {
     std::ofstream f(path, append ? std::ios::app : std::ios::trunc);
@@ -78,3 +86,4 @@ int main() {
     std::filesystem::remove_all(dir);
     TEST_MAIN_RETURN();
 }
+#endif
