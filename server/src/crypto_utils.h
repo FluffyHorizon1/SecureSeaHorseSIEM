@@ -66,6 +66,7 @@ enum MsgType : uint8_t {
     MSG_USB_REPORT     = 0x09,  // Phase 19 (v4.0.0): USB / peripheral attach/detach
     MSG_SIGMA_HIT      = 0x0A,  // Phase 16 (v3.5.0): RESERVED (server-internal event tag)
     MSG_TAMPER_EVENT   = 0x0B,  // Phase 17 (v3.5.0): client self-protection alert
+    MSG_LOG_BATCH      = 0x0C,  // Auth / syslog batch (variable-length records)
 };
 
 // =============================================================================

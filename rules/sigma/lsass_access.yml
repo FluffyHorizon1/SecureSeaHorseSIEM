@@ -1,0 +1,18 @@
+title: Possible LSASS memory access
+id: 8f3c1a10-0c6b-4b2e-9d11-51e0a8c00003
+status: experimental
+level: critical
+logsource:
+  product: windows
+  category: process_access
+detection:
+  selection_target:
+    TargetImage|endswith: '\lsass.exe'
+  selection_access:
+    GrantedAccess|re: '0x1[0-9a-fA-F]{3}'
+  filter_known:
+    SourceImage|endswith:
+      - '\csrss.exe'
+      - '\wininit.exe'
+      - '\svchost.exe'
+  condition: selection_target and selection_access and not filter_known

@@ -62,6 +62,7 @@ using SOCKET = int;
 #include "fim_common.h"           // Phase 6: FIM data structures
 #include "fim_monitor.h"          // Phase 6: Server-side FIM monitor
 #include "rest_server.h"          // Phase 7: REST API server
+#include "rate_limiter.h"          // Login brute-force throttle
 #include "dashboard_html.h"       // Phase 7: Embedded web dashboard
 #include "incident_response.h"    // Phase 8: Incident response automation
 #include "fleet_manager.h"        // Phase 9: Agent fleet management
@@ -71,9 +72,12 @@ using SOCKET = int;
 #include "session_tracker.h"      // Phase 13: Session report handling
 #include "software_inventory.h"   // Phase 14: Software report handling
 #include "correlation_engine.h"   // Phase 15: Cross-device correlation
+#include "log_batch.h"            // MSG_LOG_BATCH (0x0C)
+#include "auth_log_ingest.h"      // Parse forwarded auth logs into alerts / correlation
 #include "rbac.h"                 // Phase 20/31: RBAC, JWT auth, PBKDF2, tenants
 #include "hunt_query.h"           // Phase 23/33: Hunt DSL -> parameterised SQL
 #include "ml_anomaly.h"           // Phase 24/34: isolation forest + beaconing
+#include "sigma_ingest.h"         // v5.2 groundwork: Sigma YAML subset on ingest
 
 // =============================================================================
 // GLOBAL CONTROL
@@ -100,8 +104,10 @@ static std::unique_ptr<IncidentResponseEngine> ir_engine;  // Phase 8
 static std::unique_ptr<FleetManager>       fleet_mgr;       // Phase 9
 static std::unique_ptr<NetworkInspector>   net_inspector;   // Phase 10
 static std::unique_ptr<CorrelationEngine>  correlator;     // Phase 15
+static std::unique_ptr<SessionScanner>     auth_log_scanner; // MSG_LOG_BATCH parsers
 static std::unique_ptr<RbacManager>        rbac;           // Phase 20/31
 static std::unique_ptr<MlAnomalyDetector>  ml;             // Phase 24/34
+static std::unique_ptr<seahorse::sigma::SigmaPipeline> sigma_pipeline;
 static std::chrono::steady_clock::time_point server_start_time;
 
 // Phase 3 config
@@ -361,6 +367,23 @@ void process_report(RawTelemetry& current) {
         // Phase 2: Alert evaluation
         if (alert_engine && !sec_events.empty()) {
             alert_engine->ingest(current.device_id, current.machine_ip, sec_events);
+        }
+
+        // Sigma subset (off unless sigma_enabled=true). Keyword-style rules
+        // match the raw log chunk; field-map rules need structured fields
+        // that this telemetry path does not populate. Bad rules were skipped
+        // at load; evaluate errors are swallowed inside the pipeline.
+        if (sigma_pipeline && sigma_pipeline->enabled()) {
+            auto sigma_hits = sigma_pipeline->evaluate_and_alert(
+                raw_log, current.device_id, current.machine_ip, alert_engine.get());
+            if (pg_store) {
+                for (const auto& h : sigma_hits) {
+                    pg_store->insert_security_event(
+                        current.device_id, current.timestamp_ms,
+                        current.machine_ip,
+                        h.rule_id, h.level, "sigma", h.title);
+                }
+            }
         }
 
         // --- Baseline check ---
@@ -881,6 +904,36 @@ void process_session_report(const char* data, uint32_t len, const std::string& c
 // =============================================================================
 // PHASE 14: PROCESS SOFTWARE REPORT
 // =============================================================================
+void process_log_batch(const char* data, uint32_t len, const std::string& client_ip) {
+    LogBatch batch = deserialize_log_batch(std::string(data, len));
+    if (batch.device_id == 0) {
+        logger->log(AsyncLogger::WARN, "LOG_BATCH: parse failed or missing device_id");
+        return;
+    }
+    if (!auth_log_scanner) {
+        SessionScannerConfig cfg;
+        cfg.enabled = true;
+        cfg.track_auth_events = true;
+        auth_log_scanner = std::make_unique<SessionScanner>(cfg);
+    }
+    AuthIngestHooks hooks;
+    hooks.alerts = alert_engine.get();
+    hooks.correlator = correlator.get();
+    auto events = ingest_log_batch(*auth_log_scanner, batch, client_ip, hooks);
+
+    int fails = 0;
+    for (const auto& e : events)
+        if (e.type == AuthEventType::AUTH_LOGIN_FAILED) ++fails;
+
+    logger->log(AsyncLogger::INFO,
+        "[AUTHLOG] device=" + std::to_string(batch.device_id)
+        + " records=" + std::to_string(batch.records.size())
+        + " auth_events=" + std::to_string(events.size())
+        + " failed=" + std::to_string(fails));
+
+    if (fleet_mgr) fleet_mgr->increment_alerts(batch.device_id, fails);
+}
+
 void process_software_report(const char* data, uint32_t len, const std::string& client_ip) {
     std::string payload(data, len);
     SoftwareReport report = deserialize_software_report(payload);
@@ -1035,6 +1088,10 @@ void handle_client_ssl(SSL* ssl, SOCKET sock) {
                 }
                 case MSG_SOFTWARE_REPORT: {
                     if (plen > 0) process_software_report(payload.data(), plen, peer_ip);
+                    break;
+                }
+                case MSG_LOG_BATCH: {
+                    if (plen > 0) process_log_batch(payload.data(), plen, peer_ip);
                     break;
                 }
                 default:
@@ -1237,6 +1294,24 @@ int main(int argc, char* argv[]) {
         alert_engine = std::make_unique<AlertEngine>(alert_cfg);
         if (alert_cfg.enabled)
             logger->log(AsyncLogger::INFO, "Alert engine: " + alert_cfg.alert_log_path);
+    }
+
+    // -------------------------------------------------------------------------
+    // SIGMA SUBSET (v5.2 groundwork): off by default.
+    // -------------------------------------------------------------------------
+    {
+        seahorse::sigma::SigmaPipeline::Config sc;
+        sc.enabled   = conf.get_bool("sigma_enabled", false);
+        sc.rules_dir = conf.get("sigma_rules_dir", "sigma");
+        sigma_pipeline = std::make_unique<seahorse::sigma::SigmaPipeline>();
+        auto slog = [](const std::string& m) {
+            if (!logger) return;
+            const bool warn = m.find("skipped") != std::string::npos
+                           || m.find("failed") != std::string::npos
+                           || m.find("empty") != std::string::npos;
+            logger->log(warn ? AsyncLogger::WARN : AsyncLogger::INFO, m);
+        };
+        sigma_pipeline->load(sc, slog);
     }
 
     // -------------------------------------------------------------------------
@@ -1540,6 +1615,8 @@ int main(int argc, char* argv[]) {
         }
 
         if (rest_cfg.enabled) {
+            rest_cfg.trusted_proxies = parse_trusted_proxies(
+                conf.get("rest_trusted_proxies", ""));
             rest_server = std::make_unique<RestServer>(rest_cfg);
 
             // --- Dashboard ---
@@ -1807,14 +1884,50 @@ int main(int argc, char* argv[]) {
             });
 
             // --- Phase 20/31: authentication endpoints ---
-            rest_server->post("/api/auth/login", [](const HttpRequest& req) {
+            // Brute-force protection: failed logins are throttled per normalised
+            // username AND per peer IP. The lock is checked BEFORE the PBKDF2
+            // hash so a locked client cannot burn server CPU. 429 + Retry-After.
+            // Behind an unlisted reverse proxy the peer IP is the proxy's, hence
+            // the higher per-IP threshold. Set rest_trusted_proxies to honour XFF.
+            FailureThrottle::Config tu;
+            tu.max_failures = static_cast<size_t>((std::max)(0, conf.get_int("login_max_failures", 5)));
+            tu.window_ms    = static_cast<int64_t>((std::max)(1, conf.get_int("login_window_s", 300))) * 1000;
+            tu.lockout_ms   = static_cast<int64_t>((std::max)(1, conf.get_int("login_lockout_s", 300))) * 1000;
+            FailureThrottle::Config ti = tu;
+            ti.max_failures = static_cast<size_t>((std::max)(0, conf.get_int("login_ip_max_failures", 30)));
+            auto login_user_throttle = std::make_shared<FailureThrottle>(tu);
+            auto login_ip_throttle   = std::make_shared<FailureThrottle>(ti);
+
+            rest_server->post("/api/auth/login", [login_user_throttle, login_ip_throttle](const HttpRequest& req) {
                 if (!rbac) return HttpResponse::error(503, "RBAC disabled");
                 std::string u = json_field(req.body, "username");
                 std::string p = json_field(req.body, "password");
                 if (u.empty() || p.empty())
                     return HttpResponse::error(400, "username+password required");
-                auto res = rbac->login(u, p, "rest_api");
-                if (!res.success) return HttpResponse::error(401, "invalid credentials");
+
+                // client_ip honours X-Forwarded-For only when the direct peer is
+                // in rest_trusted_proxies; otherwise it is the socket peer.
+                const std::string ip = req.client_ip.empty()
+                    ? (req.remote_addr.empty() ? std::string("unknown") : req.remote_addr)
+                    : req.client_ip;
+                const std::string ukey = FailureThrottle::normalize_key(u);
+                const int64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count();
+                const int64_t wait_ms = (std::max)(login_ip_throttle->retry_after_ms(ip, now_ms),
+                                                   login_user_throttle->retry_after_ms(ukey, now_ms));
+                if (wait_ms > 0) {
+                    HttpResponse r = HttpResponse::error(429, "too many failed logins; try again later");
+                    r.headers["Retry-After"] = std::to_string((wait_ms + 999) / 1000);
+                    return r;
+                }
+
+                auto res = rbac->login(u, p, ip);
+                if (!res.success) {
+                    login_ip_throttle->record_failure(ip, now_ms);
+                    login_user_throttle->record_failure(ukey, now_ms);
+                    return HttpResponse::error(401, "invalid credentials");
+                }
+                login_user_throttle->record_success(ukey);
                 return HttpResponse::json(
                     std::string("{\"token\":\"") + res.jwt
                     + "\",\"role\":\""   + role_to_str(res.role)
@@ -1937,6 +2050,7 @@ int main(int argc, char* argv[]) {
     threat_intel.reset();
     classifier.reset();
     alert_engine.reset();
+    sigma_pipeline.reset();
     pg_store.reset();
     regex_engine.reset();
     csv_writer.reset();
