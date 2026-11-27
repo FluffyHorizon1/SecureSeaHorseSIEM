@@ -11,6 +11,9 @@ break. `MINOR` jumps add features. `PATCH` is defensive-only.
 
 ## [5.1.1] — 2026-11-25 — Windows CI Fix & Docs Truth-Up
 
+**DRAFT: not released.** This section describes branch `v5.1.1-prep`. It is
+not on `main` and has no release tag. See `RELEASE_NOTES_v5.1.1.md`.
+
 **Headline.** Patch release restoring the Windows vcpkg CI build, unifying
 client and server version reporting under `VERSION`, and aligning `ROADMAP.md`,
 READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
@@ -37,6 +40,42 @@ READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
 - Updated `ROADMAP.md`, `server/README.md`, `client/README.md`,
   `client/config/client.conf`, and `LICENSE` to `5.1.1` and marked wired vs
   planned modules accurately.
+
+### Pending review (not in the `v5.1.1-prep` tree)
+
+Pushed 26 Nov 2026, Linux and Windows CI green, **not merged**. Listed so a
+future 5.1.1 notes file can include them if they land. They are not part of
+this branch. Open PRs only after write permission is confirmed; do not merge
+from this document.
+
+#### `hardening/rest-auth-fail-closed` (`25b97615`)
+- REST remains fail-closed. When `rbac_enabled = true`, `rest_api_token` is
+  ignored and cleared (the static token has no tenant and would bypass
+  scoping); dashboard/API auth is a JWT from `POST /api/auth/login`.
+- **Fresh install (this branch):** shipped `server.conf` has an empty
+  `rest_api_token` and `rbac_enabled = false`, so the dashboard/API will not
+  start on a non-loopback bind until the operator sets a strong token or
+  enables RBAC. `rest_allow_noauth` is a loopback-only dev hatch.
+- Merging with `hardening/login-rate-limit` needs a manual `RestConfig`
+  resolution: keep both the fail-closed auth fields and `trusted_proxies`.
+
+#### `hardening/login-rate-limit` (`3a633886`)
+- `POST /api/auth/login` throttles failed attempts per username and per
+  client IP (HTTP 429 + `Retry-After`), checked before password hashing.
+  New keys: `login_max_failures`, `login_ip_max_failures`, `login_window_s`,
+  `login_lockout_s`.
+- `rest_trusted_proxies` (empty/off by default) honours `X-Forwarded-For`
+  only from listed IPv4 exact-address peers, using the right-most untrusted
+  hop. Spoofed XFF from any other peer is ignored. No CIDR, no IPv6.
+
+#### `ci/secret-scan-gitleaks` (`c2bb3a7c`)
+- Adds a gitleaks workflow, project rules, and a baseline for historical
+  `changeme-*` placeholders. Do not reintroduce real-looking secrets.
+
+#### `security/threat-model-v511` (`3c2d4ef2`)
+- Adds `docs/THREAT_MODEL.md` (STRIDE, hosted multi-tenant scope) rebased
+  onto `v5.1.1-prep`. Do not force-update the older `security/threat-model`
+  tip on `main`.
 
 ---
 
