@@ -175,7 +175,7 @@ private:
 
         rules_.emplace_back(
             "win_logon_failure_4625", "high", "auth_failure",
-            R"((<EventID>4625</EventID>|event\s*id[:\s]*4625))", true);
+            R"((<EventID>4625</EventID>|event\s*id[:\s]*4625\b))", true);
 
         rules_.emplace_back(
             "win_logon_failure_generic", "medium", "auth_failure",
@@ -196,7 +196,7 @@ private:
 
         rules_.emplace_back(
             "win_priv_escalation_4672", "medium", "privilege_escalation",
-            R"((<EventID>4672</EventID>|event\s*id[:\s]*4672))", true);
+            R"((<EventID>4672</EventID>|event\s*id[:\s]*4672\b))", true);
 
         // ----- Service / Daemon Events -----
         rules_.emplace_back(
@@ -223,11 +223,11 @@ private:
         // ----- Account Management (Windows) -----
         rules_.emplace_back(
             "win_account_locked_4740", "high", "account_lockout",
-            R"((<EventID>4740</EventID>|event\s*id[:\s]*4740))", true);
+            R"((<EventID>4740</EventID>|event\s*id[:\s]*4740\b))", true);
 
         rules_.emplace_back(
             "win_password_changed_4723", "low", "account_change",
-            R"((<EventID>4723</EventID>|event\s*id[:\s]*4723))", true);
+            R"((<EventID>4723</EventID>|event\s*id[:\s]*4723\b))", true);
 
         // ----- Firewall / Network -----
         rules_.emplace_back(
@@ -297,10 +297,11 @@ private:
             std::istringstream ss(line);
             std::string field;
             while (std::getline(ss, field, '|')) {
-                if (field.size() > MAX_FIELD_LEN) field.resize(MAX_FIELD_LEN);
-                // Trim each field
-                size_t fs = field.find_first_not_of(" \t");
-                size_t fe = field.find_last_not_of(" \t");
+                // Trim each field. Do not truncate before the pattern-length
+                // check below -- a 4096-byte cap used to hide oversized patterns
+                // because the field was resized first, then tested with `>`.
+                size_t fs = field.find_first_not_of(" 	");
+                size_t fe = field.find_last_not_of(" 	");
                 if (fs != std::string::npos) {
                     fields.push_back(field.substr(fs, fe - fs + 1));
                 } else {
