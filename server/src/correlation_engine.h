@@ -453,6 +453,24 @@ private:
             r.stages.push_back({"traffic", "data_exfiltration", "medium"});
             rules_.push_back(std::move(r));
         }
+
+        // Rule 8: Failed authentications from forwarded auth logs (auth.log,
+        // secure, or Windows 4625). Fires on 3 session/login_failed events
+        // in 60 seconds. Independent of the traffic-classifier brute_force
+        // stage used by brute_force_then_login.
+        {
+            CorrelationRule r;
+            r.name = "auth_brute_force";
+            r.description = "Multiple failed authentications in a short window -- possible credential attack";
+            r.severity = "high";
+            r.mitre_tactic = "Credential Access";
+            r.mitre_technique = "T1110";
+            r.window_seconds = 60;
+            r.min_events = 3;
+            r.cross_device = false;
+            r.stages.push_back({"session", "login_failed", "medium"});
+            rules_.push_back(std::move(r));
+        }
     }
 };
 
