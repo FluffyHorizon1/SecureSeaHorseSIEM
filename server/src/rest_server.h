@@ -37,6 +37,7 @@ typedef int socklen_t;
 #include <map>
 #include <functional>
 #include <sstream>
+#include <iomanip>   // std::setprecision (header must be self-contained)
 #include <algorithm>
 #include <thread>
 #include <atomic>
@@ -249,11 +250,122 @@ struct RestConfig {
     bool        enabled       = true;
     int         port          = 8080;
     std::string bind_address  = "127.0.0.1"; // Fail-safe default: loopback only
-    std::string api_token     = "";        // Static bearer token (empty = no auth; only allowed on loopback -- see main())
+    std::string api_token     = "";        // Static bearer token. Empty = NO static credential (see rest_authorize)
     std::string cors_origin   = "";        // Access-Control-Allow-Origin; empty = no CORS header (same-origin only)
     int         max_body_size = 1024 * 64; // 64KB max request body
     int         read_timeout  = 5;         // Seconds
+    // Fail-closed auth: with no api_token and no alt_auth, authenticated routes
+    // are DENIED unless this is explicitly set (dev only; main() additionally
+    // restricts it to a loopback bind).
+    bool        allow_unauthenticated = false;
+    // Optional second credential check (e.g. an RBAC JWT verifier). Called only
+    // when a bearer token was presented. Must be thread-safe.
+    std::function<bool(const HttpRequest&)> alt_auth;
 };
+
+// =============================================================================
+// AUTH DECISIONS (pure functions -- unit tested in tests/test_rest_auth.cpp)
+// =============================================================================
+
+// Compare two secrets without an early exit on the first differing byte.
+inline bool constant_time_equals(const std::string& a, const std::string& b) {
+    const size_t n = (std::max)(a.size(), b.size());
+    unsigned char diff = (a.size() != b.size()) ? 1 : 0;
+    for (size_t i = 0; i < n; ++i) {
+        const unsigned char ca = i < a.size() ? static_cast<unsigned char>(a[i]) : 0;
+        const unsigned char cb = i < b.size() ? static_cast<unsigned char>(b[i]) : 0;
+        diff = static_cast<unsigned char>(diff | (ca ^ cb));
+    }
+    return diff == 0;
+}
+
+enum class AuthDecision {
+    ALLOWED,
+    DENIED,                      // credential missing or wrong
+    DENIED_NO_AUTH_CONFIGURED    // server has no credential configured at all (fail closed)
+};
+
+// Decide whether `req` may call an auth-required route.
+//   * if alt_auth is set (RBAC on): ONLY a request accepted by alt_auth is
+//     allowed. The static api_token is ignored -- it has no tenant and would
+//     bypass tenant scoping.
+//   * otherwise a matching static api_token is sufficient
+//   * if neither mechanism is configured: deny unless allow_unauthenticated
+//   * if any mechanism is configured, allow_unauthenticated is ignored
+inline AuthDecision rest_authorize(const RestConfig& cfg, const HttpRequest& req) {
+    const std::string presented = req.bearer_token();
+    if (!presented.empty()) {
+        if (cfg.alt_auth)
+            return cfg.alt_auth(req) ? AuthDecision::ALLOWED : AuthDecision::DENIED;
+        if (!cfg.api_token.empty() && constant_time_equals(presented, cfg.api_token))
+            return AuthDecision::ALLOWED;
+    }
+    if (cfg.api_token.empty() && !cfg.alt_auth)
+        return cfg.allow_unauthenticated ? AuthDecision::ALLOWED
+                                         : AuthDecision::DENIED_NO_AUTH_CONFIGURED;
+    return AuthDecision::DENIED;
+}
+
+inline bool is_loopback_bind(const std::string& b) {
+    return b == "127.0.0.1" || b == "::1" || b == "localhost" || b.rfind("127.", 0) == 0;
+}
+
+struct RestExposure {
+    bool        enable = false;   // may the REST server start?
+    bool        warn   = false;   // started, but log `message` at WARN
+    std::string message;          // human-readable reason (never contains secrets)
+};
+
+// Startup policy (Phase 28, tightened): decide whether the REST API may start.
+//   * A shipped default token (contains "changeme") is refused on ANY bind
+//     (even with RBAC -- clear it).
+//   * No token and no RBAC: refused unless allow_noauth AND loopback bind.
+//   * RBAC on: allowed on any bind. A configured rest_api_token is ignored
+//     (it would bypass tenant scoping) and a warning is returned so main()
+//     can log it and clear the token.
+//   * Otherwise (strong token, RBAC off): allowed on any bind.
+inline RestExposure rest_exposure_decision(bool rest_enabled,
+                                           const std::string& bind,
+                                           const std::string& token,
+                                           bool rbac_enabled,
+                                           bool allow_noauth) {
+    RestExposure d;
+    if (!rest_enabled) { d.message = "REST API disabled by config"; return d; }
+    if (token.find("changeme") != std::string::npos) {
+        d.message = "rest_api_token is a shipped default placeholder; set a strong random "
+                    "token (or clear it and enable RBAC). REST API stays DOWN.";
+        return d;
+    }
+    if (rbac_enabled) {
+        d.enable = true;
+        if (!token.empty()) {
+            d.warn = true;
+            d.message = "rbac_enabled: rest_api_token is ignored so it cannot bypass "
+                        "tenant scoping. Tenant JWTs (POST /api/auth/login) are the only "
+                        "REST credentials. Clear rest_api_token from the config.";
+        }
+        return d;
+    }
+    if (token.empty()) {
+        if (!allow_noauth) {
+            d.message = "no rest_api_token and RBAC disabled: REST API refuses to start. "
+                        "Set rest_api_token, enable rbac_enabled, or (local development "
+                        "only) set rest_allow_noauth = true on a loopback bind.";
+            return d;
+        }
+        if (!is_loopback_bind(bind)) {
+            d.message = "rest_allow_noauth is only honoured on a loopback bind; '" + bind +
+                        "' is not loopback. REST API stays DOWN.";
+            return d;
+        }
+        d.enable = true; d.warn = true;
+        d.message = "rest_allow_noauth = true: REST API is UNAUTHENTICATED (loopback only). "
+                    "Development use only.";
+        return d;
+    }
+    d.enable = true;
+    return d;
+}
 
 // =============================================================================
 // REST SERVER
@@ -480,8 +592,13 @@ private:
                 match_path(route.path, req.path))
             {
                 // Auth check
-                if (route.auth_required && !config_.api_token.empty()) {
-                    if (req.bearer_token() != config_.api_token) {
+                if (route.auth_required) {
+                    const AuthDecision ad = rest_authorize(config_, req);
+                    if (ad == AuthDecision::DENIED_NO_AUTH_CONFIGURED) {
+                        resp = HttpResponse::error(401, "No API authentication configured (fail closed)");
+                        break;
+                    }
+                    if (ad == AuthDecision::DENIED) {
                         resp = HttpResponse::error(401, "Invalid or missing API token");
                         break;
                     }
