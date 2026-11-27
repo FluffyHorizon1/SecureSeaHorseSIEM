@@ -71,6 +71,8 @@ using SOCKET = int;
 #include "session_tracker.h"      // Phase 13: Session report handling
 #include "software_inventory.h"   // Phase 14: Software report handling
 #include "correlation_engine.h"   // Phase 15: Cross-device correlation
+#include "log_batch.h"            // MSG_LOG_BATCH (0x0C)
+#include "auth_log_ingest.h"      // Parse forwarded auth logs into alerts / correlation
 #include "rbac.h"                 // Phase 20/31: RBAC, JWT auth, PBKDF2, tenants
 #include "hunt_query.h"           // Phase 23/33: Hunt DSL -> parameterised SQL
 #include "ml_anomaly.h"           // Phase 24/34: isolation forest + beaconing
@@ -100,6 +102,7 @@ static std::unique_ptr<IncidentResponseEngine> ir_engine;  // Phase 8
 static std::unique_ptr<FleetManager>       fleet_mgr;       // Phase 9
 static std::unique_ptr<NetworkInspector>   net_inspector;   // Phase 10
 static std::unique_ptr<CorrelationEngine>  correlator;     // Phase 15
+static std::unique_ptr<SessionScanner>     auth_log_scanner; // MSG_LOG_BATCH parsers
 static std::unique_ptr<RbacManager>        rbac;           // Phase 20/31
 static std::unique_ptr<MlAnomalyDetector>  ml;             // Phase 24/34
 static std::chrono::steady_clock::time_point server_start_time;
@@ -881,6 +884,36 @@ void process_session_report(const char* data, uint32_t len, const std::string& c
 // =============================================================================
 // PHASE 14: PROCESS SOFTWARE REPORT
 // =============================================================================
+void process_log_batch(const char* data, uint32_t len, const std::string& client_ip) {
+    LogBatch batch = deserialize_log_batch(std::string(data, len));
+    if (batch.device_id == 0) {
+        logger->log(AsyncLogger::WARN, "LOG_BATCH: parse failed or missing device_id");
+        return;
+    }
+    if (!auth_log_scanner) {
+        SessionScannerConfig cfg;
+        cfg.enabled = true;
+        cfg.track_auth_events = true;
+        auth_log_scanner = std::make_unique<SessionScanner>(cfg);
+    }
+    AuthIngestHooks hooks;
+    hooks.alerts = alert_engine.get();
+    hooks.correlator = correlator.get();
+    auto events = ingest_log_batch(*auth_log_scanner, batch, client_ip, hooks);
+
+    int fails = 0;
+    for (const auto& e : events)
+        if (e.type == AuthEventType::AUTH_LOGIN_FAILED) ++fails;
+
+    logger->log(AsyncLogger::INFO,
+        "[AUTHLOG] device=" + std::to_string(batch.device_id)
+        + " records=" + std::to_string(batch.records.size())
+        + " auth_events=" + std::to_string(events.size())
+        + " failed=" + std::to_string(fails));
+
+    if (fleet_mgr) fleet_mgr->increment_alerts(batch.device_id, fails);
+}
+
 void process_software_report(const char* data, uint32_t len, const std::string& client_ip) {
     std::string payload(data, len);
     SoftwareReport report = deserialize_software_report(payload);
@@ -1035,6 +1068,10 @@ void handle_client_ssl(SSL* ssl, SOCKET sock) {
                 }
                 case MSG_SOFTWARE_REPORT: {
                     if (plen > 0) process_software_report(payload.data(), plen, peer_ip);
+                    break;
+                }
+                case MSG_LOG_BATCH: {
+                    if (plen > 0) process_log_batch(payload.data(), plen, peer_ip);
                     break;
                 }
                 default:
