@@ -219,21 +219,40 @@ public:
     void parse_log_for_auth(const std::string& log_text, int64_t timestamp_ms) {
         if (!config_.track_auth_events) return;
         std::lock_guard<std::mutex> lock(mutex_);
-
-        // Same 4 KiB cap as RegexEngine::analyze -- std::regex has no timeout.
         std::string text = log_text;
-        if (text.size() > 4096) text.resize(4096);
+        if (text.size() > 65536) text.resize(65536);
 
 #ifdef _WIN32
         parse_windows_auth(text, timestamp_ms);
 #else
         parse_linux_auth(text, timestamp_ms);
 #endif
+        cap_pending();
+    }
 
-        // Cap events
-        if (pending_events_.size() > static_cast<size_t>(config_.max_auth_events))
-            pending_events_.erase(pending_events_.begin(),
-                pending_events_.begin() + static_cast<long>(pending_events_.size() - config_.max_auth_events));
+    // OS-independent text parsers. The server must parse Windows Event XML
+    // even when it itself is running on Linux (and vice versa). Tests call
+    // these directly. parse_log_for_auth still dispatches by host OS for
+    // any existing in-process callers.
+    void parse_windows_auth_text(const std::string& log_text, int64_t timestamp_ms) {
+        if (!config_.track_auth_events) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        parse_windows_auth(log_text, timestamp_ms);
+        cap_pending();
+    }
+    void parse_linux_auth_text(const std::string& log_text, int64_t timestamp_ms) {
+        if (!config_.track_auth_events) return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        parse_linux_auth(log_text, timestamp_ms);
+        cap_pending();
+    }
+    // Source tag from MSG_LOG_BATCH: "windows-*" -> Windows parser, else Linux.
+    void parse_auth_record(const std::string& source, const std::string& log_text,
+                           int64_t timestamp_ms) {
+        if (source.rfind("windows", 0) == 0)
+            parse_windows_auth_text(log_text, timestamp_ms);
+        else
+            parse_linux_auth_text(log_text, timestamp_ms);
     }
 
     size_t pending_count() const {
@@ -241,30 +260,16 @@ public:
         return pending_events_.size();
     }
 
-    // Always-compiled text parsers. parse_log_for_auth still dispatches by
-    // host OS; tests call these so Windows Event Log lines can be covered
-    // on Linux CI and vice versa.
-    void parse_windows_auth_text(const std::string& log_text, int64_t timestamp_ms) {
-        if (!config_.track_auth_events) return;
-        std::lock_guard<std::mutex> lock(mutex_);
-        parse_windows_auth(log_text, timestamp_ms);
-        if (pending_events_.size() > static_cast<size_t>(config_.max_auth_events))
-            pending_events_.erase(pending_events_.begin(),
-                pending_events_.begin() + static_cast<long>(pending_events_.size() - config_.max_auth_events));
-    }
-    void parse_linux_auth_text(const std::string& log_text, int64_t timestamp_ms) {
-        if (!config_.track_auth_events) return;
-        std::lock_guard<std::mutex> lock(mutex_);
-        parse_linux_auth(log_text, timestamp_ms);
-        if (pending_events_.size() > static_cast<size_t>(config_.max_auth_events))
-            pending_events_.erase(pending_events_.begin(),
-                pending_events_.begin() + static_cast<long>(pending_events_.size() - config_.max_auth_events));
-    }
-
 private:
     SessionScannerConfig config_;
     mutable std::mutex mutex_;
     std::vector<AuthEvent> pending_events_;
+
+    void cap_pending() {
+        if (pending_events_.size() > static_cast<size_t>(config_.max_auth_events))
+            pending_events_.erase(pending_events_.begin(),
+                pending_events_.begin() + static_cast<long>(pending_events_.size() - config_.max_auth_events));
+    }
 
 #ifdef _WIN32
     void scan_windows_sessions(std::vector<SessionEntry>& sessions) {
@@ -324,7 +329,6 @@ private:
         WTSFreeMemory(pSessions);
     }
 
-
 #else
     void scan_linux_sessions(std::vector<SessionEntry>& sessions) {
         // Read from utmp
@@ -355,69 +359,76 @@ private:
         }
         endutent();
     }
-
 #endif
 
-    // Text parsers are OS-independent and always compiled so unit tests (and a
-    // server that later ingests forwarded logs) can cover both formats.
+    // Text parsers are OS-independent and always compiled so a Linux server
+    // can parse forwarded Windows Event XML, and unit tests can cover both.
     void parse_windows_auth(const std::string& log_in, int64_t ts) {
+        // EvtRender XML is often 2-6 KiB; keep a cap against pathological input
+        // and std::regex cost, but do not trim at 4 KiB or EventData (user/IP)
+        // at the end of the document is lost.
         std::string log = log_in;
-        if (log.size() > 4096) log.resize(4096);
+        if (log.size() > 65536) log.resize(65536);
 
         const auto flags = std::regex_constants::ECMAScript | std::regex_constants::icase;
-        // Require a real Event ID token -- a bare "4625" or the word "failed"
-        // previously false-triggered on build numbers, PIDs, and unrelated errors.
-        static const std::regex ev4624(R"((<EventID>4624</EventID>|event\s*id[:\s]*4624\b))", flags);
-        static const std::regex ev4625(R"((<EventID>4625</EventID>|event\s*id[:\s]*4625\b))", flags);
-        static const std::regex ev4648(R"((<EventID>4648</EventID>|event\s*id[:\s]*4648\b))", flags);
-        static const std::regex ev4672(R"((<EventID>4672</EventID>|event\s*id[:\s]*4672\b))", flags);
-        static const std::regex ev4740(R"((<EventID>4740</EventID>|event\s*id[:\s]*4740\b))", flags);
+        // Accept <EventID>4625</EventID> and <EventID Qualifiers="0">4625</EventID>
+        // plus "Event ID: 4625" / "event_id=4625". Do not match a bare "4625"
+        // or the word "failed" -- those were false-positive sources.
+        static const std::regex ev_rx(
+            R"(<EventID(?:\s[^>]*)?>\s*(4624|4625|4634|4648|4672|4740)\s*</EventID>|event\s*id\s*[=:]?\s*\b(4624|4625|4634|4648|4672|4740)\b)",
+            flags);
+        std::smatch m;
+        if (!std::regex_search(log, m, ev_rx)) return;
+        const std::string id = m[1].matched ? m[1].str() : m[2].str();
 
-        if (std::regex_search(log, ev4625)) {
-            AuthEvent e;
+        auto xml_data = [&](const char* name) -> std::string {
+            // Name is a compile-time constant (TargetUserName / IpAddress).
+            std::string pat = std::string(R"(<Data Name=")") + name + R"(">([^<]*)</Data>)";
+            std::regex rx(pat);
+            std::smatch dm;
+            if (std::regex_search(log, dm, rx)) return dm[1].str();
+            return {};
+        };
+        std::string user = xml_data("TargetUserName");
+        std::string ip   = xml_data("IpAddress");
+        if (ip == "-" || ip == "::1" || ip == "127.0.0.1") {
+            // keep loopback IPs (they are real), only drop the Windows placeholder
+            if (ip == "-") ip.clear();
+        }
+
+        AuthEvent e;
+        e.timestamp_ms = ts;
+        e.session_type = "windows";
+        e.username = user;
+        e.source_ip = ip;
+
+        if (id == "4625") {
             e.type = AuthEventType::AUTH_LOGIN_FAILED;
-            e.timestamp_ms = ts;
-            e.session_type = "windows";
             e.detail = "Failed authentication (EventID 4625)";
-            pending_events_.push_back(std::move(e));
-        }
-        if (std::regex_search(log, ev4624)) {
-            AuthEvent e;
+        } else if (id == "4624") {
             e.type = AuthEventType::AUTH_LOGIN_SUCCESS;
-            e.timestamp_ms = ts;
-            e.session_type = "windows";
             e.detail = "Successful logon (EventID 4624)";
-            pending_events_.push_back(std::move(e));
-        }
-        if (std::regex_search(log, ev4648)) {
-            AuthEvent e;
+        } else if (id == "4634") {
+            e.type = AuthEventType::AUTH_LOGOUT;
+            e.detail = "Logoff (EventID 4634)";
+        } else if (id == "4648") {
             e.type = AuthEventType::AUTH_LOGIN_SUCCESS;
-            e.timestamp_ms = ts;
-            e.session_type = "windows";
             e.detail = "Explicit credentials (EventID 4648)";
-            pending_events_.push_back(std::move(e));
-        }
-        if (std::regex_search(log, ev4672)) {
-            AuthEvent e;
+        } else if (id == "4672") {
             e.type = AuthEventType::AUTH_PRIVILEGE_ESCALATION;
-            e.timestamp_ms = ts;
-            e.session_type = "windows";
             e.detail = "Special privileges assigned (EventID 4672)";
-            pending_events_.push_back(std::move(e));
-        }
-        if (std::regex_search(log, ev4740)) {
-            AuthEvent e;
+        } else if (id == "4740") {
             e.type = AuthEventType::AUTH_ACCOUNT_LOCKOUT;
-            e.timestamp_ms = ts;
-            e.session_type = "windows";
             e.detail = "Account locked out (EventID 4740)";
-            pending_events_.push_back(std::move(e));
+        } else {
+            return;
         }
+        pending_events_.push_back(std::move(e));
     }
 
     void parse_linux_auth(const std::string& log_in, int64_t ts) {
         std::string log = log_in;
-        if (log.size() > 4096) log.resize(4096);
+        if (log.size() > 65536) log.resize(65536);
 
         if (log.find("Failed password") != std::string::npos) {
             AuthEvent e;
@@ -436,8 +447,7 @@ private:
             pending_events_.push_back(std::move(e));
         }
 
-        // Only emit a success when the sshd "Accepted <method> for ... from ..."
-        // shape matches -- a bare "Accepted" + "password" was too broad.
+        // Only emit success on the sshd "Accepted <method> for ... from ..." shape.
         {
             static const std::regex acc_rx(
                 R"(Accepted \S+ for (\S+) from (\S+))",
@@ -482,6 +492,7 @@ private:
                 pending_events_.push_back(std::move(e));
             }
         }
-    }};
+    }
+};
 
 #endif
