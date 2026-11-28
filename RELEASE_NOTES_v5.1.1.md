@@ -1,13 +1,12 @@
 # SecureSeaHorse SIEM v5.1.1 — Windows CI Fix & Docs Truth-Up
 
-**DRAFT: not released.** This describes branch `v5.1.1-prep` as of 27 Nov 2026
-(Europe/London), after PRs #13, #16, #17 and #22 were merged into it. It has
-no release tag and is not a shipping announcement. Open PRs #14, #18, #19,
-#20 and #21 are listed separately below and are not part of this description
-until they merge. Full history: `CHANGELOG.md`. Detection inventory:
-`docs/DETECTIONS.md`.
+**Status: merged to `main` (#25, 27 Nov 2026). Not tagged, not released,
+not published.** This file describes `main` after that merge. Do not treat it
+as a shipping announcement until a release has actually been cut. Full
+history: `CHANGELOG.md`. Detection inventory: `docs/DETECTIONS.md`.
 
-Line: v5.1 patch (defensive / docs / CI only on this branch).
+Line: v5.1 patch. Mostly defensive, docs and CI, plus agent auth-log
+collection, a login throttle and an off-by-default Sigma subset.
 
 ## Why this patch exists
 
@@ -18,7 +17,7 @@ and Winsock header order). Docs and installers also still mentioned port
 and unifies client/server version reporting from the top-level `VERSION`
 file.
 
-## What is actually on `v5.1.1-prep`
+## What is in v5.1.1
 
 **Fixed**
 - Windows CI: C++17 on the superbuild and test targets; `WIN32_LEAN_AND_MEAN`
@@ -27,33 +26,73 @@ file.
 - Docs and installer truth-up: port `65432` (not 9443), real config key
   names, `rest_bind = 127.0.0.1`, installer cert names, stale `changeme-*`
   examples removed from docs.
+- Agent log collection (#19). Windows: Security Event IDs
+  4624/4625/4634/4648/4672/4740 are read by EventID with a bookmark (the old
+  scrape read one `Level<=3` event and missed most logons). The first run
+  sets the bookmark and sends no history. Linux: `/var/log/auth.log` or
+  `/var/log/secure` plus syslog/messages, with inode/offset tracking and
+  rotation handling. Records go to the server on `MSG_LOG_BATCH` (0x0C);
+  `raw_log_chunk` stays 512 bytes and carries a preview of the last record.
+- Auth parsers are live on the server (#19, #20): batch records are parsed by
+  source tag (a Linux server can parse Windows XML) and feed `AlertEngine` and
+  `CorrelationEngine`, including a new `auth_brute_force` rule. Parser fixes:
+  real Event ID tokens, 4624/4648/4740 added, sudo user capture, "Accepted"
+  only on the sshd shape, and `\b` on RegexEngine Event ID patterns.
 
-**Security / CI / docs (merged 27 Nov 2026)**
+**Security / CI / docs**
 - REST API fails closed (#13): it starts only with a strong `rest_api_token`
   and/or RBAC; an empty token is no longer accepted on loopback; values
   containing `changeme` are refused on every bind; `rest_allow_noauth`
   (loopback only) is the dev escape hatch. With `rbac_enabled = true` the
   static token is ignored, so it cannot bypass tenant scoping.
+- Failed-login throttle on `POST /api/auth/login` (#14), per username and per
+  client IP, HTTP 429 with `Retry-After`, before password hashing. Keys
+  `login_max_failures`, `login_ip_max_failures`, `login_window_s`,
+  `login_lockout_s`. `rest_trusted_proxies` is empty/off by default and
+  honours `X-Forwarded-For` only from listed IPv4 exact-address peers.
 - gitleaks secret-scan workflow with a baseline for the historical
   `changeme-*` placeholders (#16).
-- `docs/THREAT_MODEL.md` (#17) and `docs/PILOT_READINESS.md` (#22).
+- `docs/THREAT_MODEL.md` (#17), `docs/PILOT_READINESS.md` (#22),
+  `docs/DETECTIONS.md` and this file (#23).
 
 **Changed**
+- Shipped configs no longer set unwired features to true (#18): flags that
+  nothing reads are `false`, and `tests/check_conf_keys.py` plus
+  `test_conf_honest` guard against regressions.
 - `SEAHORSE_VERSION` from `VERSION` is wired into the client as well as the
   server; CI checks `SeaHorseClient --version`.
 - Roadmap, READMEs, `client.conf`, and `LICENSE` say 5.1.1 and mark wired vs
   planned modules accurately.
 
-**Not in this branch (still unwired or incomplete, as in v5.1.0)**
-- Sigma (Phase 16 / 32): `sigma_engine.h` is a declaration-only stub;
-  `server.cpp` does not include it. `server.conf` has `sigma_enabled = true`
-  but that flag is not read. See `docs/DETECTIONS.md`.
-- Live syslog UDP/TCP listeners: `syslog_ingestor.h` declares `parse` and
-  listeners; there is no implementation and `server.cpp` does not include it.
-- USB monitor, reporting/compliance, agent auto-update, OIDC: config sections
-  exist and are marked planned / not wired.
+**Added, off by default or partial**
+- Sigma YAML subset (#21): `sigma_enabled = false`. When enabled it matches
+  keyword rules against the 512-byte `raw_log_chunk` only; it does not see the
+  full `MSG_LOG_BATCH` records. Field-map rules need structured fields that
+  are not populated. No `|cidr`, aggregations, auto-reload or logsource
+  filtering. The samples under `rules/sigma/` are examples, not a detection
+  pack.
+- Syslog parse / CEF / LEEF helpers (#20), unit-tested. There are no live
+  UDP/TCP listeners and no forwarder.
 
-## Fresh-install token note (current `v5.1.1-prep` behaviour)
+**Not in v5.1.1 (unwired or incomplete)**
+- Live syslog UDP/TCP listeners and forwarding.
+- USB monitor, reporting/compliance, agent auto-update, OIDC, SOAR,
+  WebSocket live stream, agent self-protection: config sections exist and are
+  marked planned / not wired.
+- Shipped IoC feeds (the loader reads pipe-delimited CSV and none ship).
+- Cert-to-device binding on the agent mTLS connection.
+- macOS agent.
+
+**Limits of the auth-log path**
+- `MSG_LOG_BATCH` is sent only when HMAC/v2 is active (`hmac_enabled = true`,
+  the shipped default on both sides). Without it the agent keeps only the
+  512-byte preview.
+- `auth_log_enabled = false` also leaves `raw_log_chunk` empty, so it turns
+  off the regex pack's log input as well as batch collection.
+- Agent and server must both be on v5.1.1; an older server has no message
+  type for the batch.
+
+## Fresh-install token note
 
 Fresh installs need a REST credential before the dashboard/API will start:
 
@@ -94,31 +133,26 @@ A gitleaks scan and baseline for the historical placeholders now runs in CI
 
 ## Breaking changes
 
-On `v5.1.1-prep` as merged today: no change to the wire protocol, database
-schema or REST routes. Behaviour changes from #13 that operators will notice:
+No change to the database schema or REST routes. The wire protocol gains one
+message type (`MSG_LOG_BATCH`, 0x0C), additive and v2/HMAC only; `raw_log_chunk`
+is unchanged. Behaviour changes operators will notice:
 
 - An empty `rest_api_token` is no longer accepted on loopback; set a token,
-  enable RBAC, or opt in with `rest_allow_noauth = true` (loopback only).
+  enable RBAC, or opt in with `rest_allow_noauth = true` (loopback only) (#13).
 - With RBAC on, a static `rest_api_token` is ignored. Anything that used
-  RBAC and the static token together must switch to a JWT.
-
-## Open PRs into `v5.1.1-prep` (not merged, not in the description above)
-
-| PR | Branch | What it does | Notes for operators |
-|---|---|---|---|
-| #14 | `hardening/login-rate-limit` | Failed-login throttle (per username and per IP, 429 + Retry-After) before password hashing. Optional `rest_trusted_proxies` (IPv4 exact addresses, right-most untrusted XFF hop). | New keys `login_max_failures`, `login_ip_max_failures`, `login_window_s`, `login_lockout_s`. Proxies empty/off by default. |
-| #18 | `fix/config-honest-flags` | Shipped configs no longer set unwired features (Sigma, reports, USB, WebSocket) to true; adds a config-key audit test. | Config-only. |
-| #19 | `fix/auth-log-inputs` | Windows 4624/4625 and Linux `auth.log`/`secure` collection, sent as `MSG_LOG_BATCH`. | Needed before any claim of logon detection. Agent and server must both be updated. |
-| #20 | `test/parser-coverage` | Parser unit tests, syslog parser, `session_tracker.h` / `regex_engine.h` fixes. | Overlaps #19 in `session_tracker.h`. |
-| #21 | `feature/sigma-rules` | Sigma YAML subset engine and ingest behind `sigma_enabled` (default false). | Off by default. |
-
-Do not treat this table as permission to merge or to push further. If these
-merge before the v5.1.1 cut, move them into "What is actually on" and
-update `docs/DETECTIONS.md`, which still describes `v5.1.1-prep` without them.
+  RBAC and the static token together must switch to a JWT (#13).
+- Repeated failed logins now return 429 with `Retry-After` (#14). Behind a
+  reverse proxy that is not in `rest_trusted_proxies`, all clients share the
+  proxy's IP, so keep `login_ip_max_failures` well above `login_max_failures`.
+- Agents now read `/var/log/auth.log` / `/var/log/secure` and the Windows
+  Security log, so the service account needs read access to them.
+- Shipped configs flip several flags from `true` to `false` (#18). Installs
+  that copied the old config keep their old values; the flags were not read
+  either way.
 
 ## Verification
 
-Re-run `ctest` and the Linux and Windows CI jobs on the exact commit you tag;
-the numbers in earlier drafts of this file referred to older tips. This draft
-does not republish binary hashes; regenerate them at release time with
-`./scripts/generate_sums.sh`.
+`main` at `5458745` (the #25 merge): Linux, Windows and Secret scan CI green.
+Re-run `ctest` and the CI jobs on the exact commit you tag. This file does not
+republish binary hashes; regenerate them at release time with
+the sums generator (currently `old/generat_sums.sh`).

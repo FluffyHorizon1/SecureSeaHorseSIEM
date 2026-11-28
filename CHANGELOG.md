@@ -11,12 +11,13 @@ break. `MINOR` jumps add features. `PATCH` is defensive-only.
 
 ## [5.1.1] — 2026-11-25 — Windows CI Fix & Docs Truth-Up
 
-**DRAFT: not released.** This section describes branch `v5.1.1-prep`. It is
-not on `main` and has no release tag. See `RELEASE_NOTES_v5.1.1.md`.
+**Status:** merged to `main` (#25, 27 Nov 2026). No release tag has been
+created and nothing has been published. See `RELEASE_NOTES_v5.1.1.md`.
 
 **Headline.** Patch release restoring the Windows vcpkg CI build, unifying
-client and server version reporting under `VERSION`, and aligning `ROADMAP.md`,
-READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
+client and server version reporting under `VERSION`, aligning `ROADMAP.md`,
+READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase,
+failing REST closed, and adding authentication-log collection from the agent.
 
 ### Fixed
 - **Windows CI build (`tests/`).** Set `CMAKE_CXX_STANDARD 17` at the root
@@ -34,7 +35,50 @@ READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
   `rest_bind = 127.0.0.1`), aligned `install_linux.sh certs` output names
   (`.crt`/`.key`), and scrubbed stale `changeme-*` example values from docs.
 
+- **Windows and Linux auth-log collection (#19).** The agent previously read
+  one recent Windows Security event at `Level<=3` (which drops most 4624/4625
+  logons) and only `/var/log/syslog` or `/var/log/messages` on Linux. It now
+  reads Security Event IDs 4624/4625/4634/4648/4672/4740 by EventID with a
+  bookmark (events from the first run onward; no history is back-filled), and
+  `/var/log/auth.log` or `/var/log/secure` plus syslog/messages with
+  inode/offset tracking and rotation handling. Records travel on the new
+  `MSG_LOG_BATCH` (0x0C) message, sent only when HMAC/v2 is active; the
+  512-byte `raw_log_chunk` is unchanged and carries a preview of the last
+  record. See `docs/AUTH_LOG_PROTOCOL.md`.
+- **Auth parsers are now live (#19, #20).** The server routes each batch
+  record to the Windows or Linux parser by source tag, feeds `AuthEvent`s to
+  `AlertEngine` and `CorrelationEngine`, and adds the `auth_brute_force`
+  correlation rule. Parser fixes: real Event ID tokens instead of bare
+  `4625` / `failed` substrings, 4624/4648/4740 added, sudo username capture,
+  "Accepted" only on the sshd shape, and `\b` on the RegexEngine Event ID
+  patterns so `event id: 46250` no longer matches 4625.
+
+### Added
+- Failed-login throttle on `POST /api/auth/login`, per username and per client
+  IP (HTTP 429 with `Retry-After`), checked before password hashing (#14). New
+  keys `login_max_failures`, `login_ip_max_failures`, `login_window_s`,
+  `login_lockout_s`. `rest_trusted_proxies` (empty/off by default) honours
+  `X-Forwarded-For` only from listed IPv4 exact-address peers; no CIDR, no
+  IPv6.
+- Sigma YAML subset engine and ingest (`sigma_engine.h`, `sigma_ingest.h`),
+  **off by default** (`sigma_enabled = false`). When on, it evaluates the
+  agent `raw_log_chunk` against rules in `sigma_rules_dir`. Sample rules under
+  `rules/sigma/` (#21). Not a community-rule engine: no `|cidr`,
+  aggregations, auto-reload or logsource filtering.
+- `SyslogIngestor::parse` and `SyslogForwarder::to_cef` / `to_leef`, with
+  unit tests (#20). Live UDP/TCP listeners and the forwarder are still not
+  implemented.
+- Tests: `test_auth_parsers`, `test_auth_log_ingest`, `test_log_tail`,
+  `test_parsers`, `test_rate_limiter`, `test_sigma`, `test_sigma_ingest`,
+  `test_conf_honest`, and `tests/check_conf_keys.py` (audit of shipped config
+  keys the code never reads). `tests/CMakeLists.txt` registers a test only if
+  its `.cpp` exists.
+
 ### Changed
+- Shipped configs no longer advertise features that are not wired. Flags that
+  nothing reads (`sigma_auto_reload`, `reports_enabled`, `usb_enabled`,
+  `ws_enabled`, `selfprotect_*`, `usb_monitor_enabled`) are `false`;
+  `sigma_enabled` is `false` (#18).
 - Wired `SEAHORSE_VERSION` from `VERSION` into `client/CMakeLists.txt` and
   `client/src/client.cpp` and added a `SeaHorseClient --version` check to CI.
 - Updated `ROADMAP.md`, `server/README.md`, `client/README.md`,
@@ -56,37 +100,15 @@ READMEs, installers, and `docs/USER_MANUAL.md` with the actual v5.1 codebase.
   scoping; tenant JWTs from `POST /api/auth/login` are the only REST
   credentials.
 
-### CI and docs (merged into `v5.1.1-prep`)
+### CI and docs
 - Added a gitleaks secret-scan workflow with project rules and a baseline for
   the historical `changeme-*` placeholders (#16). Do not reintroduce
   real-looking secrets.
 - Added `docs/THREAT_MODEL.md` (STRIDE, hosted multi-tenant scope) (#17).
 - Added `docs/PILOT_READINESS.md`, design-partner notes for a managed
   service (#22).
-- Added `docs/DETECTIONS.md`, an inventory of what the code detects today, and
-  draft `RELEASE_NOTES_v5.1.1.md` (#23).
-
-### Queued in open PRs into `v5.1.1-prep` (NOT yet merged)
-Move each of these into the sections above when its PR merges, and delete
-this block before tagging. Check `git log` rather than this list if unsure.
-- #14 `hardening/login-rate-limit`: failed-login throttle on
-  `POST /api/auth/login` (per username and per client IP, HTTP 429 with
-  `Retry-After`, checked before password hashing). New keys
-  `login_max_failures`, `login_ip_max_failures`, `login_window_s`,
-  `login_lockout_s`. `rest_trusted_proxies` (empty/off by default) honours
-  `X-Forwarded-For` only from listed IPv4 exact-address peers; no CIDR, no IPv6.
-- #18 `fix/config-honest-flags`: shipped configs no longer advertise features
-  that are not wired (Sigma, reports, USB, WebSocket and similar flags that
-  nothing reads are now `false`); adds a config-key audit
-  (`tests/check_conf_keys.py`, `test_conf_honest`).
-- #19 `fix/auth-log-inputs`: agent reads Windows Security logon events
-  (4624/4625) and Linux `auth.log`/`secure`, shipped as `MSG_LOG_BATCH`
-  (`docs/AUTH_LOG_PROTOCOL.md`). Until this merges, logon detection is not live.
-- #20 `test/parser-coverage`: parser unit tests (`test_parsers`), a syslog
-  parser in `syslog_ingestor.h`, and `session_tracker.h`/`regex_engine.h`
-  fixes. Overlaps #19 in `session_tracker.h`.
-- #21 `feature/sigma-rules`: Sigma YAML subset engine and ingest, behind
-  `sigma_enabled` (default false).
+- Added `docs/DETECTIONS.md`, an inventory of what the code detects, and
+  `RELEASE_NOTES_v5.1.1.md` (#23).
 
 ---
 

@@ -1,19 +1,18 @@
-# Detections inventory (v5.1.1-prep)
-
-> Point-in-time (27 Nov 2026). It describes `v5.1.1-prep` without the open PRs #19 (auth logs), #20 (parser tests) and #21 (Sigma). Update it when any of those merge.
+# Detections inventory (v5.1.1, `main`)
 
 **Audience:** Lead Researcher, before any design-partner outreach.
 
-**Rule:** this list is taken from the code on `v5.1.1-prep` unless a section
-says otherwise. File paths are the source of truth. Config flags that exist
+**Rule:** this list is taken from the code on `main` (v5.1.1) unless a
+section says otherwise. File paths are the source of truth. Config flags that exist
 but are not read, and headers that are not included by `server.cpp` /
 `client.cpp`, are **not** live. Do not quote this as a complete Sigma, syslog,
 or USB product.
 
-Date of inventory: 27 Nov 2026 (Europe/London). Updated later the same
-morning after a read of `origin/main` (`c201c5e`, v5.1.0) and a correction
-to §2.3: the auth line parsers are **not** live on `main` or on
-`v5.1.1-prep`. They become live only once `fix/auth-log-inputs` is merged.
+Date of inventory: 27 Nov 2026 (Europe/London), updated after v5.1.1 was
+merged to `main` (#25, `5458745`). Earlier drafts of this file described
+`v5.1.0` / `v5.1.1-prep`, where the auth parsers were not called and the
+agent scrape missed most Windows logons. That is no longer true; see §1 and
+§2.3. Not tagged or released.
 
 ---
 
@@ -21,18 +20,29 @@ to §2.3: the auth line parsers are **not** live on `main` or on
 
 | Source | What is collected | Path |
 |---|---|---|
-| Agent log scrape (Windows) | **One** recent Security (fallback: System) Event Log record with `Level<=3`, rendered as XML into a **512-byte** `raw_log_chunk`. The Level filter drops typical Audit Success / Information logon events (4624 / 4625 are usually Level 4). Not an Event ID subscription, not a bookmark, not a channel forwarder. | `client/src/client.cpp` (`scrape_logs`) on `main` and `v5.1.1-prep` |
-| Agent log scrape (Linux) | Tail of `/var/log/syslog` or `/var/log/messages` only, into the same 512-byte chunk. **Does not** read `/var/log/auth.log` or `/var/log/secure`. No offset tracking (the same tail can be re-sent every cycle). | `client/src/client.cpp` (`scrape_logs`) on `main` and `v5.1.1-prep` |
+| Agent auth-log collection (Windows) | Security channel Event IDs 4624 / 4625 / 4634 / 4648 / 4672 / 4740 by EventID XPath (not Level), up to `auth_log_max_events_per_cycle` (default 32) and `auth_log_max_bytes_per_cycle` per cycle, with an Evt bookmark so events are not re-sent. The first run only sets the bookmark; no history is back-filled. Sent as `MSG_LOG_BATCH` (0x0C), **HMAC/v2 only**. The last record is also rendered into the 512-byte `raw_log_chunk` preview. | `client/src/client.cpp` (`scrape_logs`, `send_log_batch`), `client/src/win_event_log.h`, `client/src/log_batch.h` |
+| Agent auth-log collection (Linux) | `/var/log/auth.log` and/or `/var/log/secure` (each if present) plus the first existing of `/var/log/syslog`, `/var/log/messages`, with inode + offset tracking and rotation handling. First run baselines to end-of-file. Same `MSG_LOG_BATCH` path and 512-byte preview. | `client/src/client.cpp` (`scrape_logs`), `client/src/log_tail.h` |
 | Agent metrics | CPU, RAM, disk, net counters on the same telemetry report | `client/src/client.cpp` |
 | Process / connection / session / software / FIM reports | Separate wire messages, deserialized on the server | `server/src/process_monitor.h`, `connection_inventory.h`, `session_tracker.h`, `software_inventory.h`, `fim_common.h`; dispatch in `server/src/server.cpp` |
 
-The server runs the log-oriented detectors on `RawTelemetry.raw_log_chunk`
-inside `process_report` (`server/src/server.cpp`). There is no separate JSON
-log parser and no live syslog listener in this tree.
+Two server paths consume this telemetry:
+
+- `process_report` (`server/src/server.cpp`) runs the log-oriented detectors
+  (regex pack, traffic and network heuristics, IoC match, and Sigma when
+  enabled) on `RawTelemetry.raw_log_chunk`, which is only the **512-byte
+  preview** of the last collected record.
+- `process_log_batch` handles `MSG_LOG_BATCH`: every record goes to the auth
+  parsers (§2.3). Batch records are **not** passed through the regex pack or
+  Sigma.
+
+With `hmac_enabled = false` (or an HMAC/v2 handshake that fails) the agent
+sends no batch and only the preview reaches the server. With
+`auth_log_enabled = false` the agent also leaves `raw_log_chunk` empty. There
+is no separate JSON log parser and no live syslog listener in this tree.
 
 ---
 
-## 2. Live on `v5.1.1-prep`
+## 2. Live on `main`
 
 ### 2.1 Built-in regex rules
 
@@ -68,10 +78,9 @@ are active unless an operator adds them.
 | `iptables_drop` | medium | firewall | `iptables` … `DROP` | Linux syslog chunk |
 | `ufw_block` | medium | firewall | `[UFW BLOCK]` | Linux syslog chunk |
 
-Known gap in this tree: the `event id[: ] NNNN` alternatives do **not** use
-a trailing word boundary, so `event id: 46250` matches the 4625 rule (and
-similarly 4672 / 4740 / 4723). The `<EventID>4625</EventID>` form is exact.
-A fix lives only on the unmerged `test/parser-coverage` branch (§3).
+The `event id[: ] NNNN` alternatives carry a trailing `\b` (fixed in #20), so
+`event id: 46250` no longer matches the 4625 rule. The `<EventID>4625</EventID>`
+form is exact. Oversized `rules.conf` patterns are rejected, not truncated.
 
 ### 2.2 Threshold alerts
 
@@ -81,45 +90,43 @@ A fix lives only on the unmerged `test/parser-coverage` branch (§3).
 privilege_escalation 2/120s, account_lockout 1/60s, resource_exhaustion
 1/60s, crash 2/300s. Written to `alert_log` (default `alerts.log`).
 
-### 2.3 Session / auth line parsers — NOT live on prep or main
+### 2.3 Auth line parsers (live via `MSG_LOG_BATCH`)
 
-`server/src/session_tracker.h` and the identical `client/src/session_tracker.h`
-contain `parse_log_for_auth`, `parse_windows_auth`, and `parse_linux_auth`.
-**Those functions are never called** from `client/src/client.cpp` or
-`server/src/server.cpp` on `v5.1.1-prep` or on `main`. Session reports only
-enumerate active sessions (WTS / utmp) via `scan_sessions` /
-`collect_auth_events`; the pending auth-event list stays empty because
-nothing feeds the parsers. On these branches the parsers are also compiled
-only for the **host OS** (`#ifdef _WIN32`), so a Linux server could not
-parse Windows Event XML even if a call were added.
+`server/src/session_tracker.h` (`SessionScanner::parse_auth_record`) and
+`server/src/auth_log_ingest.h`. The server picks the parser from the record's
+source tag (`windows-security` -> Windows XML parser; `linux-auth` /
+`linux-syslog` -> Linux parser), so a Linux server can parse Windows Event XML.
+`client/src/session_tracker.h` is an identical copy.
 
-Do **not** tell customers that authentication log parsing is live on
-`main` or on `v5.1.1-prep`. The only auth-like detection that actually
-runs is the regex pack over the 512-byte `raw_log_chunk` (§2.1), which
-inherits the collection gaps in §1 (Windows `Level<=3`, Linux syslog
-only).
+- Windows: real `<EventID>` tokens or `Event ID: NNNN` text for 4624, 4625,
+  4634, 4648, 4672, 4740; user and source IP from `TargetUserName` /
+  `IpAddress`.
+- Linux: sshd `Failed password for … from …` (failure), sshd `Accepted
+  <method> for … from …` (success), any `sudo:` line containing `COMMAND`
+  (privilege escalation; the user is captured, not the `sudo` token), and
+  `su` lines with `Successful` / `session opened` (privilege escalation).
+  Failed `su` and sshd `Invalid user` lines are **not** parsed here; they are
+  only caught by the regex pack on the preview (§2.1).
+- Each failed logon is forwarded twice to `AlertEngine` as `auth_failure`
+  (medium) and `brute_force` (high), so the 5/300s and 3/60s thresholds in
+  §2.2 apply. Privilege escalation and account lockout events map to their
+  categories.
+- Every auth event is ingested by `CorrelationEngine` (source `session`);
+  that includes the new `auth_brute_force` rule (3 failed logons in 60s,
+  per device). The second stage of `brute_force_then_login` accepts any
+  `session` event, so a failed logon also satisfies it; do not describe it
+  as "brute force then confirmed successful login".
 
-The parsers become live **only once `fix/auth-log-inputs` is merged**.
-That branch (off prep, not on GitHub at the time of this update):
-
-- Collects Windows Security Event IDs 4624 / 4625 / 4634 / 4648 / 4672 /
-  4740 by EventID XPath (not Level), with an Evt bookmark and more than
-  one event per cycle.
-- Collects `/var/log/auth.log` or `/var/log/secure` in addition to
-  syslog, with inode/offset tracking and rotation handling.
-- Sends records on a backward-compatible `MSG_LOG_BATCH` (0x0C); the
-  512-byte `raw_log_chunk` is unchanged.
-- Routes records into the parsers on the **server** by source tag (a
-  Linux server can parse Windows XML), and feeds `AuthEvent`s to
-  `AlertEngine` and `CorrelationEngine` (including an `auth_brute_force`
-  rule).
-
-Parser quality notes for the **unwired** prep/main copies still stand:
-Linux sudo can record the username as `sudo`; a line that merely
-contains “Accepted” and “password” can be treated as a success; Windows
-uses a bare `4625` / `failed` substring. Those bugs are also addressed
-on `test/parser-coverage` (§3) and, for the XML / source-tag path, on
-`fix/auth-log-inputs`.
+Limits:
+- Auth parsing runs only on `MSG_LOG_BATCH` records. If the batch is not
+  sent (HMAC/v2 off, older agent or server), `process_report` still runs
+  only the regex pack over the 512-byte preview.
+- Parsers are `std::regex` with a 64 KiB input cap per record.
+- Windows collection starts at the first run; earlier events are not
+  imported. A first-run baseline also applies to Linux files.
+- Usernames and IPs are only as good as the log line. A host that writes the
+  same sshd/sudo line to both `auth.log` and `syslog` is read from both files,
+  so the same event can arrive twice.
 
 ### 2.4 Traffic classification
 
@@ -214,43 +221,41 @@ precision limitation. Baselines are not partitioned per tenant.
 
 ---
 
-## 3. Only on unmerged branches (not live on `v5.1.1-prep`)
+## 3. In v5.1.1 but off by default or partial
 
-Do not describe these as shipping detections until the branches are
-reviewed and merged.
+Do not describe these as active detections for a customer unless an operator
+has turned them on and checked them.
 
-### 3.1 `test/parser-coverage` (local, not pushed)
+### 3.1 Sigma subset (`sigma_enabled = false` by default)
 
-- Implements `SyslogIngestor::parse` / `to_cef` / `to_leef` in
-  `server/src/syslog_ingestor.h` (the header already declared them). **Live
-  UDP/TCP listeners remain unimplemented.**
-- Tightens Windows Event ID matching (real Event ID tokens, not bare
-  `4625` / `failed`); adds 4624 / 4648 / 4740; caps auth lines at 4 KiB.
-- Fixes the Linux sudo username capture and the over-broad “Accepted” +
-  “password” match.
-- Adds `\b` on RegexEngine Event ID patterns so `event id: 46250` no longer
-  matches 4625; rejects oversized `rules.conf` patterns instead of
-  truncating them into compiled rules.
-
-### 3.2 `feature/sigma-rules` (local, not pushed)
-
-- Real header-only Sigma YAML *subset* in `server/src/sigma_engine.h` (the
-  prep branch only has a declaration stub).
-- Wired in `server/src/sigma_ingest.h` + `process_report` behind
-  `sigma_enabled` (**default false**). Hits go to `AlertEngine::raise_sigma`
-  (rule id, title, level) and to `security_events` when Postgres is up.
-- Keyword-style rules can match `raw_log_chunk`. Field-map rules
-  (`Image|endswith`, …) need structured fields that `process_report` does
-  not populate today.
+- Header-only Sigma YAML *subset* in `server/src/sigma_engine.h`, wired by
+  `server/src/sigma_ingest.h` and `process_report`. `server.cpp` reads
+  `sigma_enabled` (default false) and `sigma_rules_dir`.
+- When enabled, hits go to `AlertEngine::raise_sigma` (rule id, title, level)
+  and to `security_events` when Postgres is up.
+- It evaluates `raw_log_chunk` only (the 512-byte preview). It never sees the
+  full `MSG_LOG_BATCH` records.
+- Keyword-style rules can match the raw log line. Field-map rules
+  (`Image|endswith`, …) need structured fields that `process_report` does not
+  populate today.
 - Unsupported: most community-rule features (`|cidr`, aggregations,
-  auto-reload, logsource filtering, …). The old `server/config/sigma/README.md`
-  “~90% of community rules” claim is not true of this subset.
-- Sample rules under `rules/sigma/`; existing `server/config/sigma/*.yml`
+  auto-reload, logsource filtering, …). `sigma_auto_reload` and
+  `sigma_reload_s` are not read; rules load once at startup. The older
+  `server/config/sigma/README.md` claims (“~90% of community rules”, periodic
+  reload) are not true of this subset.
+- Sample rules under `rules/sigma/`; the existing `server/config/sigma/*.yml`
   load as keyword lists.
 
-The four 26 Nov *pushed* branches (`hardening/*`, `ci/secret-scan-gitleaks`,
-`security/threat-model-v511`) are security, CI, and documentation. They do
-not add detectors.
+### 3.2 Syslog parse / CEF / LEEF helpers (no listeners)
+
+`SyslogIngestor::parse` and `SyslogForwarder::to_cef` / `to_leef` in
+`server/src/syslog_ingestor.h` are implemented and unit-tested. `add_listener`
+only stores config; `start()` only flips a flag and `send()` is a no-op.
+`server.cpp` does not include the header and `syslog_listener_enabled` is
+unread (shipped `false`). No syslog is ingested.
+
+The 26 Nov security and CI changes (REST fail-closed, login throttle,
+gitleaks, threat model) do not add detectors.
 
 ---
 
@@ -258,37 +263,40 @@ not add detectors.
 
 | Item | Evidence | Status |
 |---|---|---|
-| Sigma on `v5.1.1-prep` | `server/src/sigma_engine.h` is declarations only; `server.cpp` does not `#include` it; `sigma_enabled` in `server/config/server.conf` is not read | Not live. Subset + flag exist only on `feature/sigma-rules`. |
-| Live syslog ingest (UDP 514 / TCP 6514) | `server/src/syslog_ingestor.h` has no function bodies on prep; `server.cpp` does not include it. `syslog_listener_enabled` defaults false | Not implemented. Parse/serialize only, on `test/parser-coverage`. |
+| Sigma on by default | `sigma_enabled = false` in `server/config/server.conf`; subset engine only, see §3.1 | Off until an operator enables it; preview-only input |
+| Live syslog ingest (UDP 514 / TCP 6514) | `syslog_ingestor.h` has parse/serialize only (§3.2); `server.cpp` does not include it; `syslog_listener_enabled` is unread | Not implemented |
 | JSON log parser | No ingest class; JSON appears in REST (`json_escape`) and Hunt, not as a partner log format | Not a detection source |
-| USB / peripheral monitor | Phase 19 **PLANNED -- NOT WIRED**; `usb_monitor.h` is not included from `server.cpp`. On prep/main the shipped conf still has `usb_enabled = true` (unread). Local `fix/config-honest-flags` sets it false. | Not live |
-| Reporting / compliance packs | Same file, Phase 18 **PLANNED -- NOT WIRED** | Not live |
+| USB / peripheral monitor | Phase 19 **PLANNED -- NOT WIRED**; `usb_monitor.h` is not included from `server.cpp`; `usb_enabled = false` | Not live |
+| Reporting / compliance packs | Same file, Phase 18 **PLANNED -- NOT WIRED**; `reports_enabled = false` | Not live |
 | Agent auto-update | Phase 17 **PLANNED -- NOT WIRED**; `updates_enabled` | Not live |
 | OIDC | `rbac_oidc_*` keys documented as planned, not read | Not live |
-| Full Windows Event Log shipping | On prep/main, `scrape_logs` queries **one** recent `Level<=3` event (Audit Success / Information logons such as 4624/4625 are typically missed). Bookmark + EventID query exists only on unmerged `fix/auth-log-inputs`. | Not a full channel forwarder on prep/main |
-| Linux auth logs (`/var/log/auth.log`, `/var/log/secure`) | Prep/main read only syslog/messages. Auth files + offset tracking are on unmerged `fix/auth-log-inputs`. | Not collected on prep/main |
-| Auth line parsers producing alerts / correlation | `parse_log_for_auth` is never called on prep/main (see §2.3). | **Not live** until `fix/auth-log-inputs` |
+| Auth-log batch without HMAC/v2 | `MSG_LOG_BATCH` is sent only when `hmac_active` | With HMAC off only the 512-byte preview reaches the server |
+| Historical logons | Windows bookmark and Linux offsets baseline on first run | No back-fill of events from before the agent started |
+| Windows channels other than Security | `win_event_log.h` polls Security Event IDs 4624/4625/4634/4648/4672/4740 only | Not a full channel forwarder |
 | Shipped IoC feed files / JSON feeds | `server/config/feeds/` is empty except a README; the loader is pipe-CSV only | Engine is live, but default install has zero indicators |
 | Cert-to-device binding | Agent mTLS is enforced (`SSL_VERIFY_FAIL_IF_NO_PEER_CERT`) on port **65432**, but any client cert signed by the CA can present any `device_id`. | Identity gap, not a missing detector |
-| Per-tenant ML, complete per-route RBAC | Threat model on `security/threat-model-v511` | Isolation gaps, not missing rules |
-| Community Sigma coverage, `|cidr`, correlation-style Sigma, auto-reload | `feature/sigma-rules` subset notes | Not supported even on that branch |
+| Per-tenant ML, complete per-route RBAC | `docs/THREAT_MODEL.md` | Isolation gaps, not missing rules |
+| Community Sigma coverage, `|cidr`, correlation-style Sigma, auto-reload | §3.1 | Not supported |
 
 ---
 
 ## 5. How to talk about this before outreach
 
-Safe: “v5.1.1-prep has a built-in regex pack on a 512-byte agent log
-preview (Linux syslog/messages, or one recent Windows Event XML that
-passed `Level<=3`), threshold alerts, traffic and DNS heuristics, IoC
-matching once an operator adds pipe-delimited CSV feeds (none ship),
-FIM diffs, process/connection name-and-port heuristics, a small
-correlation pack, and unsupervised ML anomaly scores. Agent-to-server
-mTLS is required on port 65432.”
+Safe: “v5.1.1 has a built-in regex pack over a 512-byte agent log preview,
+and, when the agent and server run protocol v2 with HMAC (the default),
+the agent ships Windows Security logon events (4624 / 4625 / 4634 / 4648 /
+4672 / 4740) and Linux `auth.log` / `secure` / syslog records that the server
+parses into failed-logon, privilege-escalation and lockout alerts and an
+`auth_brute_force` correlation. It also has threshold alerts, traffic and DNS
+heuristics, IoC matching once an operator adds pipe-delimited CSV feeds (none
+ship), FIM diffs, process/connection name-and-port heuristics, a small
+correlation pack, and unsupervised ML anomaly scores. Agent-to-server mTLS is
+required on port 65432.”
 
-Not safe: “We ingest syslog and Windows Event Logs as a SIEM collector,”
-“authentication log parsing is live,” “we read auth.log / Security
-logon events 4624/4625,” “Sigma is on,” “USB device control is on,”
-“we ship community Sigma coverage,” “JSON IoC feeds come pre-loaded,”
-“PDF reporting is on,” “client certificates are bound to a device id,”
-or any claim that the unmerged parser, Sigma, or `fix/auth-log-inputs`
-work is already on `main` or `v5.1.1-prep`.
+Not safe: “We ingest syslog as a SIEM collector” (there are no syslog
+listeners), “we collect every Windows event channel,” “we import historical
+logs” (collection starts when the agent starts), “Sigma is on” (off by
+default, preview-only, small subset), “we ship community Sigma coverage,”
+“USB device control is on,” “JSON IoC feeds come pre-loaded,” “PDF reporting
+is on,” “client certificates are bound to a device id,” or any claim that
+macOS agents are supported.
